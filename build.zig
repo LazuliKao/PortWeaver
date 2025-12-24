@@ -67,8 +67,8 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .link_libc = true,
             // .strip = true,
-            .single_threaded = true,
-            .no_builtin = true,
+            // .single_threaded = true,
+            // .no_builtin = true,
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
             // this package, which is why in this case we don't have to give it a name.
