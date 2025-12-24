@@ -2,16 +2,16 @@ const std = @import("std");
 const uci = @import("uci.zig");
 
 pub fn main() !void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+    // var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    // defer arena.deinit();
+    // const allocator = arena.allocator();
 
     // 不再需要手动调用 initLibUci，函数会在首次使用时自动延迟加载
-    try printFirewallConfig(allocator);
+    try printFirewallConfig();
 }
 
 /// Print all firewall configuration settings
-pub fn printFirewallConfig(allocator: std.mem.Allocator) !void {
+pub fn printFirewallConfig() !void {
     std.debug.print("Loading firewall configuration...\n", .{});
 
     // Allocate UCI context
@@ -34,14 +34,14 @@ pub fn printFirewallConfig(allocator: std.mem.Allocator) !void {
         };
 
         std.debug.print("Firewall configuration:\n", .{});
-        try listConfigSections(allocator, package);
+        try listConfigSections(package);
     } else {
         std.debug.print("Firewall package is null\n", .{});
     }
 }
 
 /// Get all sections and options from a UCI package
-pub fn listConfigSections(_: std.mem.Allocator, package: uci.UciPackage) !void {
+pub fn listConfigSections(package: uci.UciPackage) !void {
     // 简化实现：由于我们现在使用 opaque 类型，
     // 实际的遍历需要通过 C 函数接口
     std.debug.print("Package loaded successfully!\n", .{});
