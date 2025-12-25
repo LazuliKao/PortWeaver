@@ -35,6 +35,29 @@ fn parseJsonString(v: std.json.Value) ![]const u8 {
     };
 }
 
+fn appendZoneString(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, s: []const u8) !void {
+    const trimmed = std.mem.trim(u8, s, " \t\r\n");
+    if (trimmed.len == 0) return;
+    try list.append(try allocator.dupe(u8, trimmed));
+}
+
+fn parseJsonZones(
+    allocator: std.mem.Allocator,
+    v: std.json.Value,
+    out: *std.ArrayList([]const u8),
+) !void {
+    switch (v) {
+        .string => |s| try appendZoneString(out, allocator, s),
+        .array => |a| {
+            for (a.items) |item| {
+                const s = try parseJsonString(item);
+                try appendZoneString(out, allocator, s);
+            }
+        },
+        else => return types.ConfigError.InvalidValue,
+    }
+}
+
 pub fn loadFromJsonFile(allocator: std.mem.Allocator, path: []const u8) !types.Config {
     const json_text = std.fs.cwd().readFileAlloc(allocator, path, 1 << 20) catch return types.ConfigError.JsonParseError;
     defer allocator.free(json_text);
@@ -71,9 +94,29 @@ pub fn loadFromJsonFile(allocator: std.mem.Allocator, path: []const u8) !types.C
         var have_target_address = false;
         var have_target_port = false;
 
+        var src_zones_list = std.ArrayList([]const u8).init(allocator);
+        defer src_zones_list.deinit();
+        errdefer {
+            for (src_zones_list.items) |z| allocator.free(z);
+        }
+
+        var dest_zones_list = std.ArrayList([]const u8).init(allocator);
+        defer dest_zones_list.deinit();
+        errdefer {
+            for (dest_zones_list.items) |z| allocator.free(z);
+        }
+
         if (jsonGetAliased(obj, &.{ "remark", "note", "备注" })) |v| {
             const s = try parseJsonString(v);
             project.remark = try types.dupeIfNonEmpty(allocator, s);
+        }
+
+        if (jsonGetAliased(obj, &.{ "src_zone", "source_zone", "srcZone", "src-zone", "来源区域", "源区域" })) |v| {
+            try parseJsonZones(allocator, v, &src_zones_list);
+        }
+
+        if (jsonGetAliased(obj, &.{ "dest_zone", "destination_zone", "dst_zone", "destZone", "dest-zone", "目标区域" })) |v| {
+            try parseJsonZones(allocator, v, &dest_zones_list);
         }
 
         if (jsonGetAliased(obj, &.{ "family", "addr_family", "地址族限制" })) |v| {
@@ -120,6 +163,13 @@ pub fn loadFromJsonFile(allocator: std.mem.Allocator, path: []const u8) !types.C
             if (have_target_address) allocator.free(project.target_address);
             if (project.remark.len != 0) allocator.free(project.remark);
             return types.ConfigError.MissingField;
+        }
+
+        if (src_zones_list.items.len != 0) {
+            project.src_zones = try src_zones_list.toOwnedSlice();
+        }
+        if (dest_zones_list.items.len != 0) {
+            project.dest_zones = try dest_zones_list.toOwnedSlice();
         }
 
         try list.append(project);

@@ -1,12 +1,16 @@
 const std = @import("std");
 const uci = @import("uci/mod.zig");
+const firewall = @import("impl/firewall.zig");
 
 pub fn main() !void {
-    // var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    // defer arena.deinit();
-    // const allocator = arena.allocator();
-
     try printFirewallConfig();
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    firewall.reloadFirewall(allocator) catch |err| {
+        std.debug.print("Error reloading firewall: {}\n", .{err});
+    };
 }
 
 /// Print all firewall configuration settings

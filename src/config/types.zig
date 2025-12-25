@@ -23,6 +23,12 @@ pub const Protocol = enum {
 pub const Project = struct {
     /// 备注
     remark: []const u8 = "",
+    /// 防火墙来源 zones（用于转发/DNAT 时的 src）
+    /// 为空表示使用默认值（通常为 "wan"）
+    src_zones: []const []const u8 = &[_][]const u8{},
+    /// 防火墙目标 zones（用于转发/DNAT 时的 dest）
+    /// 为空表示使用默认值（通常为 "lan"）
+    dest_zones: []const []const u8 = &[_][]const u8{},
     /// 地址族限制: IPv4 和 IPv6 / IPv4 / IPv6
     family: AddressFamily = .any,
     /// 协议: TCP+UDP / TCP / UDP
@@ -42,6 +48,14 @@ pub const Project = struct {
 
     pub fn deinit(self: *Project, allocator: std.mem.Allocator) void {
         if (self.remark.len != 0) allocator.free(self.remark);
+        if (self.src_zones.len != 0) {
+            for (self.src_zones) |z| allocator.free(z);
+            allocator.free(self.src_zones);
+        }
+        if (self.dest_zones.len != 0) {
+            for (self.dest_zones) |z| allocator.free(z);
+            allocator.free(self.dest_zones);
+        }
         allocator.free(self.target_address);
         self.* = undefined;
     }
