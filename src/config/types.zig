@@ -37,18 +37,18 @@ pub const Project = struct {
     protocol: Protocol = .both,
     /// 监听端口
     listen_port: u16,
-    /// reuseaddr 绑定到本地端口
-    reuseaddr: bool = false,
     /// 目标地址
     target_address: []const u8,
     /// 目标端口
     target_port: u16,
     /// 打开防火墙端口
-    open_firewall_port: bool = false,
+    open_firewall_port: bool = true,
     /// 添加防火墙转发
-    add_firewall_forward: bool = false,
+    add_firewall_forward: bool = true,
     /// 启用应用层端口转发（使用 Zig 网络库实现，类似 socat）
     enable_app_forward: bool = false,
+    /// reuseaddr 绑定到本地端口
+    reuseaddr: bool = true,
 
     pub fn deinit(self: *Project, allocator: std.mem.Allocator) void {
         if (self.remark.len != 0) allocator.free(self.remark);
