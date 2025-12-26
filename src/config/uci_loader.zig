@@ -65,7 +65,9 @@ fn parseProjectFromSection(allocator: std.mem.Allocator, sec: uci.UciSection) !t
         if (!opt.isString()) continue;
         const opt_val = uci.cStr(opt.getString());
 
-        if (std.mem.eql(u8, opt_name, "remark") or std.mem.eql(u8, opt_name, "note") or std.mem.eql(u8, opt_name, "备注")) {
+        if (std.mem.eql(u8, opt_name, "enabled") or std.mem.eql(u8, opt_name, "enable") or std.mem.eql(u8, opt_name, "启用")) {
+            project.enabled = try types.parseBool(opt_val);
+        } else if (std.mem.eql(u8, opt_name, "remark") or std.mem.eql(u8, opt_name, "note") or std.mem.eql(u8, opt_name, "备注")) {
             project.remark = try types.dupeIfNonEmpty(allocator, opt_val);
         } else if (std.mem.eql(u8, opt_name, "family") or std.mem.eql(u8, opt_name, "addr_family") or std.mem.eql(u8, opt_name, "地址族限制")) {
             project.family = try types.parseFamily(opt_val);

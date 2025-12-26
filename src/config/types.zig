@@ -21,6 +21,8 @@ pub const Protocol = enum {
 
 /// One port-forwarding project/rule.
 pub const Project = struct {
+    /// 是否启用此规则
+    enabled: bool = true,
     /// 备注
     remark: []const u8 = "",
     /// 防火墙来源 zones（用于转发/DNAT 时的 src）
