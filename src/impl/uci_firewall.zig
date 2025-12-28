@@ -245,7 +245,7 @@ pub fn clearFirewallRules(ctx: uci.UciContext, allocator: std.mem.Allocator) !vo
     var fw_pkg = try ctx.load("firewall");
     defer fw_pkg.unload() catch {};
 
-    var sections_to_delete = std.ArrayList([]const u8).init(allocator);
+    var sections_to_delete = std.array_list.Managed([]const u8).init(allocator);
     defer {
         for (sections_to_delete.items) |name| {
             allocator.free(name);

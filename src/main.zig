@@ -1,9 +1,11 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const config = @import("config/mod.zig");
-const firewall = @import("impl/uci_firewall.zig");
 const app_forward = @import("impl/app_forward.zig");
-const uci = @import("uci/mod.zig");
+
+// 仅在 UCI 模式下导入 UCI 相关模块
+const firewall = if (build_options.uci_mode) @import("impl/uci_firewall.zig") else void;
+const uci = if (build_options.uci_mode) @import("uci/mod.zig") else void;
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -64,58 +66,89 @@ fn parseConfigFile(args: []const []const u8) ![]const u8 {
 /// 应用配置：设置防火墙规则并启动应用层转发
 fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !void {
     var has_app_forward = false;
-    var uci_ctx: ?uci.UciContext = null;
 
     // 初始化 UCI 上下文（如果需要配置防火墙）
     if (build_options.uci_mode) {
-        uci_ctx = try uci.UciContext.alloc();
-    }
-    defer if (uci_ctx) |ctx| ctx.free();
+        var uci_ctx = try uci.UciContext.alloc();
+        defer uci_ctx.free();
 
-    for (cfg.projects, 0..) |project, i| {
-        if (!project.enabled) {
-            std.debug.print("Project {d} ({s}) is disabled, skipping.\n", .{ i + 1, project.remark });
-            continue;
-        }
+        // 删除旧的规则
+        std.debug.print("Clearing old firewall rules...\n", .{});
+        firewall.clearFirewallRules(uci_ctx, allocator) catch |err| {
+            std.debug.print("Warning: Failed to clear old firewall rules: {any}\n", .{err});
+        };
+        for (cfg.projects, 0..) |project, i| {
+            if (!project.enabled) {
+                std.debug.print("Project {d} ({s}) is disabled, skipping.\n", .{ i + 1, project.remark });
+                continue;
+            }
 
-        std.debug.print("Applying project {d}: {s}\n", .{ i + 1, project.remark });
-        std.debug.print("  Listen: :{d} -> Target: {s}:{d}\n", .{
-            project.listen_port,
-            project.target_address,
-            project.target_port,
-        });
+            std.debug.print("Applying project {d}: {s}\n", .{ i + 1, project.remark });
+            std.debug.print("  Listen: :{d} -> Target: {s}:{d}\n", .{
+                project.listen_port,
+                project.target_address,
+                project.target_port,
+            });
 
-        // 应用防火墙规则 (仅在 UCI 模式下)
-        if (build_options.uci_mode and uci_ctx != null) {
+            // 应用防火墙规则
             std.debug.print("  Applying firewall rules...\n", .{});
-            firewall.applyFirewallRulesForProject(uci_ctx.?, allocator, project) catch |err| {
+            firewall.applyFirewallRulesForProject(uci_ctx, allocator, project) catch |err| {
                 std.debug.print("Warning: Failed to apply firewall rules: {any}\n", .{err});
             };
+
+            // 启动应用层端口转发（如果启用）
+            if (project.enable_app_forward) {
+                has_app_forward = true;
+                std.debug.print("  Starting application layer forwarding...\n", .{});
+
+                // 为每个项目创建独立线程
+                const thread = std.Thread.spawn(.{}, startForwardingThread, .{
+                    allocator,
+                    project,
+                }) catch |err| {
+                    std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
+                    continue;
+                };
+                thread.detach();
+            }
         }
 
-        // 启动应用层端口转发（如果启用）
-        if (project.enable_app_forward) {
-            has_app_forward = true;
-            std.debug.print("  Starting application layer forwarding...\n", .{});
-
-            // 为每个项目创建独立线程
-            const thread = std.Thread.spawn(.{}, startForwardingThread, .{
-                allocator,
-                project,
-            }) catch |err| {
-                std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
-                continue;
-            };
-            thread.detach();
-        }
-    }
-
-    // 重新加载防火墙配置 (仅在 UCI 模式下)
-    if (build_options.uci_mode) {
+        // 重新加载防火墙配置
         std.debug.print("Reloading firewall...\n", .{});
         firewall.reloadFirewall(allocator) catch |err| {
             std.debug.print("Warning: Failed to reload firewall: {any}\n", .{err});
         };
+    } else {
+        // JSON 模式：只启动应用层转发
+        for (cfg.projects, 0..) |project, i| {
+            if (!project.enabled) {
+                std.debug.print("Project {d} ({s}) is disabled, skipping.\n", .{ i + 1, project.remark });
+                continue;
+            }
+
+            std.debug.print("Applying project {d}: {s}\n", .{ i + 1, project.remark });
+            std.debug.print("  Listen: :{d} -> Target: {s}:{d}\n", .{
+                project.listen_port,
+                project.target_address,
+                project.target_port,
+            });
+
+            // 启动应用层端口转发（如果启用）
+            if (project.enable_app_forward) {
+                has_app_forward = true;
+                std.debug.print("  Starting application layer forwarding...\n", .{});
+
+                // 为每个项目创建独立线程
+                const thread = std.Thread.spawn(.{}, startForwardingThread, .{
+                    allocator,
+                    project,
+                }) catch |err| {
+                    std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
+                    continue;
+                };
+                thread.detach();
+            }
+        }
     }
 
     // 如果有应用层转发，保持程序运行
