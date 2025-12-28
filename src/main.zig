@@ -27,18 +27,18 @@ pub fn main() !void {
 
 /// 根据编译选项和命令行参数加载配置
 fn loadConfig(allocator: std.mem.Allocator, args: []const []const u8) !config.Config {
-    if (build_options.enable_json) {
-        // JSON 模式：需要通过 -c 参数指定配置文件
-        const config_file = try parseConfigFile(args);
-        std.debug.print("Loading configuration from JSON file: {s}\n", .{config_file});
-        return try config.loadFromJsonFile(allocator, config_file);
-    } else {
+    if (build_options.uci_mode) {
         // UCI 模式：直接从 UCI 加载配置
         std.debug.print("Loading configuration from UCI...\n", .{});
         // Allocate UCI context
         var uci_ctx = try uci.UciContext.alloc();
         defer uci_ctx.free();
         return try config.loadFromUci(allocator, uci_ctx, "portweaver");
+    } else {
+        // JSON 模式：需要通过 -c 参数指定配置文件
+        const config_file = try parseConfigFile(args);
+        std.debug.print("Loading configuration from JSON file: {s}\n", .{config_file});
+        return try config.loadFromJsonFile(allocator, config_file);
     }
 }
 
@@ -63,6 +63,15 @@ fn parseConfigFile(args: []const []const u8) ![]const u8 {
 
 /// 应用配置：设置防火墙规则并启动应用层转发
 fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !void {
+    var has_app_forward = false;
+    var uci_ctx: ?uci.UciContext = null;
+
+    // 初始化 UCI 上下文（如果需要配置防火墙）
+    if (build_options.uci_mode) {
+        uci_ctx = try uci.UciContext.alloc();
+    }
+    defer if (uci_ctx) |ctx| ctx.free();
+
     for (cfg.projects, 0..) |project, i| {
         if (!project.enabled) {
             std.debug.print("Project {d} ({s}) is disabled, skipping.\n", .{ i + 1, project.remark });
@@ -76,22 +85,52 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !void {
             project.target_port,
         });
 
-        // 应用防火墙规则
-        if (!build_options.enable_json) {
-            // UCI 模式下重新加载防火墙
-            if (i == cfg.projects.len - 1) {
-                // 只在最后一个项目后重新加载防火墙
-                firewall.reloadFirewall(allocator) catch |err| {
-                    std.debug.print("Warning: Failed to reload firewall: {}\n", .{err});
-                };
-            }
+        // 应用防火墙规则 (仅在 UCI 模式下)
+        if (build_options.uci_mode and uci_ctx != null) {
+            std.debug.print("  Applying firewall rules...\n", .{});
+            firewall.applyFirewallRulesForProject(uci_ctx.?, allocator, project) catch |err| {
+                std.debug.print("Warning: Failed to apply firewall rules: {any}\n", .{err});
+            };
         }
 
         // 启动应用层端口转发（如果启用）
         if (project.enable_app_forward) {
+            has_app_forward = true;
             std.debug.print("  Starting application layer forwarding...\n", .{});
-            // TODO: 实现应用层转发的实际启动逻辑
-            // 这里需要启动独立的转发线程或异步任务
+
+            // 为每个项目创建独立线程
+            const thread = std.Thread.spawn(.{}, startForwardingThread, .{
+                allocator,
+                project,
+            }) catch |err| {
+                std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
+                continue;
+            };
+            thread.detach();
         }
     }
+
+    // 重新加载防火墙配置 (仅在 UCI 模式下)
+    if (build_options.uci_mode) {
+        std.debug.print("Reloading firewall...\n", .{});
+        firewall.reloadFirewall(allocator) catch |err| {
+            std.debug.print("Warning: Failed to reload firewall: {any}\n", .{err});
+        };
+    }
+
+    // 如果有应用层转发，保持程序运行
+    if (has_app_forward) {
+        std.debug.print("Application layer forwarding is running. Press Ctrl+C to stop.\n", .{});
+        // 保持主线程运行
+        while (true) {
+            std.Thread.sleep(std.time.ns_per_s);
+        }
+    }
+}
+
+/// 在独立线程中启动转发
+fn startForwardingThread(allocator: std.mem.Allocator, project: config.Project) void {
+    app_forward.startForwarding(allocator, project) catch |err| {
+        std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ project.remark, err });
+    };
 }

@@ -35,7 +35,7 @@ fn parseJsonString(v: std.json.Value) ![]const u8 {
     };
 }
 
-fn appendZoneString(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, s: []const u8) !void {
+fn appendZoneString(list: *std.array_list.Managed([]const u8), allocator: std.mem.Allocator, s: []const u8) !void {
     const trimmed = std.mem.trim(u8, s, " \t\r\n");
     if (trimmed.len == 0) return;
     try list.append(try allocator.dupe(u8, trimmed));
@@ -44,7 +44,7 @@ fn appendZoneString(list: *std.ArrayList([]const u8), allocator: std.mem.Allocat
 fn parseJsonZones(
     allocator: std.mem.Allocator,
     v: std.json.Value,
-    out: *std.ArrayList([]const u8),
+    out: *std.array_list.Managed([]const u8),
 ) !void {
     switch (v) {
         .string => |s| try appendZoneString(out, allocator, s),
@@ -65,7 +65,7 @@ pub fn loadFromJsonFile(allocator: std.mem.Allocator, path: []const u8) !types.C
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch return types.ConfigError.JsonParseError;
     defer parsed.deinit();
 
-    var list = std.ArrayList(types.Project).init(allocator);
+    var list = std.array_list.Managed(types.Project).init(allocator);
     errdefer {
         for (list.items) |*p| p.deinit(allocator);
         list.deinit();
@@ -94,13 +94,13 @@ pub fn loadFromJsonFile(allocator: std.mem.Allocator, path: []const u8) !types.C
         var have_target_address = false;
         var have_target_port = false;
 
-        var src_zones_list = std.ArrayList([]const u8).init(allocator);
+        var src_zones_list = std.array_list.Managed([]const u8).init(allocator);
         defer src_zones_list.deinit();
         errdefer {
             for (src_zones_list.items) |z| allocator.free(z);
         }
 
-        var dest_zones_list = std.ArrayList([]const u8).init(allocator);
+        var dest_zones_list = std.array_list.Managed([]const u8).init(allocator);
         defer dest_zones_list.deinit();
         errdefer {
             for (dest_zones_list.items) |z| allocator.free(z);

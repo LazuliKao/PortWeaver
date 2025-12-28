@@ -53,7 +53,6 @@ pub const TcpForwarder = struct {
 
         var server = try address.listen(.{
             .reuse_address = true,
-            .reuse_port = false,
         });
 
         self.server = server;
@@ -68,7 +67,7 @@ pub const TcpForwarder = struct {
             // 接受连接
             const connection = server.accept() catch |err| {
                 if (self.running.load(.seq_cst)) {
-                    std.debug.print("[TCP] Accept error: {}\n", .{err});
+                    std.debug.print("[TCP] Accept error: {any}\n", .{err});
                 }
                 continue;
             };
@@ -80,7 +79,7 @@ pub const TcpForwarder = struct {
                 self.target_address,
                 self.target_port,
             }) catch |err| {
-                std.debug.print("[TCP] Failed to spawn thread: {}\n", .{err});
+                std.debug.print("[TCP] Failed to spawn thread: {any}\n", .{err});
                 connection.stream.close();
                 continue;
             };
@@ -105,11 +104,11 @@ pub const TcpForwarder = struct {
         defer client.stream.close();
 
         const client_addr = client.address;
-        std.debug.print("[TCP] New connection from {}\n", .{client_addr});
+        std.debug.print("[TCP] New connection from {any}\n", .{client_addr});
 
         // 连接到目标服务器
         const target = net.tcpConnectToHost(allocator, target_address, target_port) catch |err| {
-            std.debug.print("[TCP] Failed to connect to target {s}:{d}: {}\n", .{ target_address, target_port, err });
+            std.debug.print("[TCP] Failed to connect to target {s}:{d}: {any}\n", .{ target_address, target_port, err });
             return;
         };
         defer target.close();
@@ -117,14 +116,17 @@ pub const TcpForwarder = struct {
         std.debug.print("[TCP] Connected to target {s}:{d}\n", .{ target_address, target_port });
 
         // 创建两个线程分别处理双向转发
-        const forward_thread = std.Thread.spawn(.{}, forwardData, .{ &client.stream, &target, "client->target" }) catch |err| {
-            std.debug.print("[TCP] Failed to spawn forward thread: {}\n", .{err});
+        var client_stream = client.stream;
+        var target_stream = target;
+
+        const forward_thread = std.Thread.spawn(.{}, forwardData, .{ &client_stream, &target_stream, "client->target" }) catch |err| {
+            std.debug.print("[TCP] Failed to spawn forward thread: {any}\n", .{err});
             return;
         };
         defer forward_thread.join();
 
-        const backward_thread = std.Thread.spawn(.{}, forwardData, .{ &target, &client.stream, "target->client" }) catch |err| {
-            std.debug.print("[TCP] Failed to spawn backward thread: {}\n", .{err});
+        const backward_thread = std.Thread.spawn(.{}, forwardData, .{ &target_stream, &client_stream, "target->client" }) catch |err| {
+            std.debug.print("[TCP] Failed to spawn backward thread: {any}\n", .{err});
             return;
         };
         defer backward_thread.join();
@@ -136,7 +138,7 @@ pub const TcpForwarder = struct {
         while (true) {
             const n = src.read(&buffer) catch |err| {
                 if (err != error.EndOfStream) {
-                    std.debug.print("[TCP] Read error ({s}): {}\n", .{ direction, err });
+                    std.debug.print("[TCP] Read error ({s}): {any}\n", .{ direction, err });
                 }
                 break;
             };
@@ -144,7 +146,7 @@ pub const TcpForwarder = struct {
             if (n == 0) break;
 
             dst.writeAll(buffer[0..n]) catch |err| {
-                std.debug.print("[TCP] Write error ({s}): {}\n", .{ direction, err });
+                std.debug.print("[TCP] Write error ({s}): {any}\n", .{ direction, err });
                 break;
             };
         }
@@ -245,7 +247,7 @@ pub const UdpForwarder = struct {
                 &src_addr_len,
             ) catch |err| {
                 if (self.running.load(.seq_cst)) {
-                    std.debug.print("[UDP] Receive error: {}\n", .{err});
+                    std.debug.print("[UDP] Receive error: {any}\n", .{err});
                 }
                 continue;
             };
@@ -260,7 +262,7 @@ pub const UdpForwarder = struct {
                 &target_addr.any,
                 target_addr.getOsSockLen(),
             ) catch |err| {
-                std.debug.print("[UDP] Send to target error: {}\n", .{err});
+                std.debug.print("[UDP] Send to target error: {any}\n", .{err});
                 continue;
             };
 
@@ -268,7 +270,7 @@ pub const UdpForwarder = struct {
             const client_hash = hashAddress(src_addr);
             try self.clients.put(client_hash, src_addr);
 
-            std.debug.print("[UDP] Forwarded {d} bytes from {} to {s}:{d}\n", .{
+            std.debug.print("[UDP] Forwarded {d} bytes from {any} to {s}:{d}\n", .{
                 n,
                 src_addr,
                 self.target_address,
@@ -346,7 +348,7 @@ pub fn startForwarding(allocator: std.mem.Allocator, project: types.Project) !vo
             udp_thread.detach();
 
             // 主线程等待
-            std.time.sleep(std.time.ns_per_s * 365 * 24 * 60 * 60); // 1 year
+            std.Thread.sleep(std.time.ns_per_s * 365 * 24 * 60 * 60); // 1 year
         },
     }
 }
@@ -360,7 +362,7 @@ fn startTcpForward(
 ) void {
     var tcp_forwarder = TcpForwarder.init(allocator, listen_port, target_address, target_port, family);
     tcp_forwarder.start() catch |err| {
-        std.debug.print("[TCP] Forward error: {}\n", .{err});
+        std.debug.print("[TCP] Forward error: {any}\n", .{err});
     };
 }
 
@@ -374,6 +376,6 @@ fn startUdpForward(
     var udp_forwarder = UdpForwarder.init(allocator, listen_port, target_address, target_port, family);
     defer udp_forwarder.deinit();
     udp_forwarder.start() catch |err| {
-        std.debug.print("[UDP] Forward error: {}\n", .{err});
+        std.debug.print("[UDP] Forward error: {any}\n", .{err});
     };
 }

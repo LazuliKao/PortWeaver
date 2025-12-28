@@ -7,9 +7,9 @@ const std = @import("std");
 // build runner to parallelize the build automatically (and the cache system to
 // know when a step doesn't need to be re-run).
 pub fn build(b: *std.Build) void {
-    const enable_json = b.option(bool, "json", "Enable JSON config support") orelse false;
+    const uci_mode = b.option(bool, "uci", "UCI Mode") orelse false;
     const options = b.addOptions();
-    options.addOption(bool, "enable_json", enable_json);
+    options.addOption(bool, "uci_mode", uci_mode);
     const options_mod = options.createModule();
 
     // Standard target options allow the person running `zig build` to choose

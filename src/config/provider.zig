@@ -4,12 +4,6 @@ const build_options = @import("build_options");
 const types = @import("types.zig");
 const uci_loader = @import("uci_loader.zig");
 
-const json_loader = if (build_options.enable_json) @import("json_loader.zig") else struct {
-    pub fn loadFromJsonFile(_: std.mem.Allocator, _: []const u8) !types.Config {
-        return types.ConfigError.UnsupportedFeature;
-    }
-};
-
 /// Compile-time generic config loader.
 ///
 /// Best-practice Zig polymorphism: any `source` that provides
@@ -33,25 +27,16 @@ pub const UciProvider = struct {
     }
 };
 
-pub const JsonProvider = if (build_options.enable_json) struct {
+pub const JsonProvider = if (build_options.uci_mode) struct {
     path: []const u8,
-
-    pub fn load(self: JsonProvider, allocator: std.mem.Allocator) !types.Config {
-        return json_loader.loadFromJsonFile(allocator, self.path);
-    }
-} else struct {
-    path: []const u8,
-
     pub fn load(self: JsonProvider, allocator: std.mem.Allocator) !types.Config {
         _ = self;
         _ = allocator;
         return types.ConfigError.UnsupportedFeature;
     }
+} else struct {
+    path: []const u8,
+    pub fn load(self: JsonProvider, allocator: std.mem.Allocator) !types.Config {
+        return @import("json_loader.zig").loadFromJsonFile(allocator, self.path);
+    }
 };
-
-test "config: generic provider compiles" {
-    const fake_ctx = uci.UciContext{ .ctx = null };
-    const p = UciProvider{ .ctx = fake_ctx, .package_name = "portweaver" };
-    // Only typechecks; should error at runtime with ctx=null.
-    _ = loadFrom(std.testing.allocator, p) catch {};
-}

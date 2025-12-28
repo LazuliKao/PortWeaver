@@ -20,16 +20,23 @@ const provider = @import("provider.zig");
 pub const UciProvider = provider.UciProvider;
 pub const JsonProvider = provider.JsonProvider;
 pub const loadFrom = provider.loadFrom;
-
-pub const loadFromUci = @import("uci_loader.zig").loadFromUci;
-
-const json_loader = if (build_options.enable_json)
-    @import("json_loader.zig")
+const uci_loader = if (build_options.uci_mode)
+    @import("uci_loader.zig")
 else
+    struct {
+        pub fn loadFromUci(_: std.mem.Allocator, _: *@import("../uci/mod.zig").UciContext, _: []const u8) !Config {
+            return ConfigError.UnsupportedFeature;
+        }
+    };
+pub const loadFromUci = uci_loader.loadFromUci;
+
+const json_loader = if (build_options.uci_mode)
     struct {
         pub fn loadFromJsonFile(_: std.mem.Allocator, _: []const u8) !Config {
             return ConfigError.UnsupportedFeature;
         }
-    };
+    }
+else
+    @import("json_loader.zig");
 
 pub const loadFromJsonFile = json_loader.loadFromJsonFile;
