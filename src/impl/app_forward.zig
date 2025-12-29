@@ -1,6 +1,7 @@
 const std = @import("std");
 const net = std.net;
 const posix = std.posix;
+const builtin = @import("builtin");
 const types = @import("../config/types.zig");
 
 pub const ForwardError = error{
@@ -136,20 +137,42 @@ pub const TcpForwarder = struct {
         var buffer: [BUFFER_SIZE]u8 = undefined;
 
         while (true) {
-            const n = src.read(&buffer) catch |err| {
+            const n = streamRead(src, &buffer) catch |err| {
                 if (err != error.EndOfStream) {
                     std.debug.print("[TCP] Read error ({s}): {any}\n", .{ direction, err });
                 }
                 break;
             };
 
-            if (n == 0) break;
-
-            dst.writeAll(buffer[0..n]) catch |err| {
+            dstWriteAll(dst, buffer[0..n]) catch |err| {
                 std.debug.print("[TCP] Write error ({s}): {any}\n", .{ direction, err });
                 break;
             };
         }
+    }
+
+    fn streamRead(stream: *net.Stream, buffer: []u8) !usize {
+        if (builtin.os.tag == .windows) {
+            const n = posix.recv(stream.handle, buffer, 0) catch |err| return err;
+            if (n == 0) return error.EndOfStream;
+            return n;
+        }
+
+        return stream.read(buffer);
+    }
+
+    fn dstWriteAll(stream: *net.Stream, data: []const u8) !void {
+        if (builtin.os.tag == .windows) {
+            var sent: usize = 0;
+            while (sent < data.len) {
+                const n = posix.send(stream.handle, data[sent..], 0) catch |err| return err;
+                if (n == 0) return error.Unexpected;
+                sent += n;
+            }
+            return;
+        }
+
+        try stream.writeAll(data);
     }
 };
 
