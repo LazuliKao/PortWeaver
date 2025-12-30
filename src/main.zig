@@ -130,6 +130,7 @@ fn applyConfig(io: Io, allocator: std.mem.Allocator, cfg: config.Config) !bool {
 
                 // 为每个项目创建独立线程
                 const thread = std.Thread.spawn(.{}, startForwardingThread, .{
+                    io,
                     allocator,
                     project,
                 }) catch |err| {
@@ -172,6 +173,7 @@ fn applyConfig(io: Io, allocator: std.mem.Allocator, cfg: config.Config) !bool {
 
                 // 为每个项目创建独立线程
                 const thread = std.Thread.spawn(.{}, startForwardingThread, .{
+                    io,
                     allocator,
                     project,
                 }) catch |err| {
@@ -190,10 +192,14 @@ fn applyConfig(io: Io, allocator: std.mem.Allocator, cfg: config.Config) !bool {
 }
 
 /// 在独立线程中启动转发
-fn startForwardingThread(allocator: std.mem.Allocator, project: config.Project) void {
-    _ = allocator;
-    _ = project;
-    // app_forward.startForwarding(allocator, project) catch |err| {
-    //     std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ project.remark, err });
-    // };
+fn startForwardingThread(io: Io, allocator: std.mem.Allocator, project: config.Project) void {
+    app_forward.startForwarding(io, allocator, project) catch |err| {
+        std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ project.remark, err });
+        const trace = @errorReturnTrace();
+        if (trace) |t| {
+            std.debug.dumpStackTrace(t);
+        } else {
+            std.debug.print("No error return trace available (build may have tracing disabled).\n", .{});
+        }
+    };
 }
