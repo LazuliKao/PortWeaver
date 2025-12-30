@@ -12,8 +12,14 @@ pub const ForwardError = error{
     InvalidAddress,
 };
 
-const BUFFER_SIZE = 8192;
+const BUFFER_SIZE = 1 * 1024;
+const THREAD_STACK_SIZE = 64 * 1024;
 
+pub inline fn getThreadConfig() std.Thread.SpawnConfig {
+    return std.Thread.SpawnConfig{
+        .stack_size = THREAD_STACK_SIZE,
+    };
+}
 /// TCP 转发器
 pub const TcpForwarder = struct {
     allocator: std.mem.Allocator,
@@ -73,8 +79,7 @@ pub const TcpForwarder = struct {
                 continue;
             };
 
-            // 为每个连接创建新线程
-            const thread = std.Thread.spawn(.{}, handleTcpConnection, .{
+            const thread = std.Thread.spawn(getThreadConfig(), handleTcpConnection, .{
                 self.allocator,
                 connection,
                 self.target_address,
@@ -116,21 +121,20 @@ pub const TcpForwarder = struct {
 
         std.debug.print("[TCP] Connected to target {s}:{d}\n", .{ target_address, target_port });
 
-        // 创建两个线程分别处理双向转发
         var client_stream = client.stream;
         var target_stream = target;
 
-        const forward_thread = std.Thread.spawn(.{}, forwardData, .{ &client_stream, &target_stream, "client->target" }) catch |err| {
+        // 启动一个线程负责 "Client -> Target"，当前线程负责 "Target -> Client"。
+
+        const forward_thread = std.Thread.spawn(getThreadConfig(), forwardData, .{ &client_stream, &target_stream, "client->target" }) catch |err| {
             std.debug.print("[TCP] Failed to spawn forward thread: {any}\n", .{err});
             return;
         };
-        defer forward_thread.join();
+        // 在当前线程执行反向转发
+        forwardData(&target_stream, &client_stream, "target->client");
 
-        const backward_thread = std.Thread.spawn(.{}, forwardData, .{ &target_stream, &client_stream, "target->client" }) catch |err| {
-            std.debug.print("[TCP] Failed to spawn backward thread: {any}\n", .{err});
-            return;
-        };
-        defer backward_thread.join();
+        // 等待发送线程结束（通常是因为一方关闭了连接）
+        forward_thread.join();
     }
 
     fn forwardData(src: *net.Stream, dst: *net.Stream, direction: []const u8) void {
@@ -138,14 +142,17 @@ pub const TcpForwarder = struct {
 
         while (true) {
             const n = streamRead(src, &buffer) catch |err| {
-                if (err != error.EndOfStream) {
+                if (err != error.EndOfStream and err != error.ConnectionReset and err != error.BrokenPipe) {
+                    // 仅打印非正常关闭的错误
                     std.debug.print("[TCP] Read error ({s}): {any}\n", .{ direction, err });
                 }
                 break;
             };
 
             dstWriteAll(dst, buffer[0..n]) catch |err| {
-                std.debug.print("[TCP] Write error ({s}): {any}\n", .{ direction, err });
+                if (err != error.BrokenPipe and err != error.ConnectionReset) {
+                    std.debug.print("[TCP] Write error ({s}): {any}\n", .{ direction, err });
+                }
                 break;
             };
         }
@@ -157,7 +164,6 @@ pub const TcpForwarder = struct {
             if (n == 0) return error.EndOfStream;
             return n;
         }
-
         return stream.read(buffer);
     }
 
@@ -171,7 +177,6 @@ pub const TcpForwarder = struct {
             }
             return;
         }
-
         try stream.writeAll(data);
     }
 };
@@ -185,8 +190,7 @@ pub const UdpForwarder = struct {
     family: types.AddressFamily,
     socket: ?posix.socket_t,
     running: std.atomic.Value(bool),
-    // 客户端地址映射表，用于记住每个客户端的地址
-    clients: std.AutoHashMap(u64, net.Address),
+    // 优化：删除了造成内存泄漏且未被使用的 clients HashMap
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -203,12 +207,12 @@ pub const UdpForwarder = struct {
             .family = family,
             .socket = null,
             .running = std.atomic.Value(bool).init(false),
-            .clients = std.AutoHashMap(u64, net.Address).init(allocator),
         };
     }
 
     pub fn deinit(self: *UdpForwarder) void {
-        self.clients.deinit();
+        // 无需清理 clients map
+        _ = self;
     }
 
     pub fn start(self: *UdpForwarder) !void {
@@ -228,7 +232,6 @@ pub const UdpForwarder = struct {
         );
         errdefer posix.close(sock);
 
-        // 设置 SO_REUSEADDR
         try posix.setsockopt(
             sock,
             posix.SOL.SOCKET,
@@ -246,7 +249,6 @@ pub const UdpForwarder = struct {
             self.target_port,
         });
 
-        // 解析目标地址
         const target_list = try net.getAddressList(self.allocator, self.target_address, self.target_port);
         defer target_list.deinit();
 
@@ -289,9 +291,11 @@ pub const UdpForwarder = struct {
                 continue;
             };
 
-            // 保存客户端地址以便回复
-            const client_hash = hashAddress(src_addr);
-            try self.clients.put(client_hash, src_addr);
+            // 优化：移除了 put client 到 hashmap 的逻辑，避免内存泄漏
+            // 注意：当前的 UDP 逻辑仅支持 "Client -> Target" 的单向盲转发。
+            // 如果需要支持 Target 回包给 Client，需要实现 NAT 映射表和双向监听，
+            // 且必须带有超时清理机制 (TTL)，否则内存必然泄露。
+            // 鉴于原代码逻辑并未处理回包，这里仅做内存清理。
 
             std.debug.print("[UDP] Forwarded {d} bytes from {any} to {s}:{d}\n", .{
                 n,
@@ -308,13 +312,6 @@ pub const UdpForwarder = struct {
             posix.close(sock);
             self.socket = null;
         }
-    }
-
-    fn hashAddress(addr: net.Address) u64 {
-        var hasher = std.hash.Wyhash.init(0);
-        const bytes = std.mem.asBytes(&addr.any);
-        hasher.update(bytes);
-        return hasher.final();
     }
 };
 
@@ -362,7 +359,7 @@ pub fn startForwarding(allocator: std.mem.Allocator, project: types.Project) !vo
             },
             .both => {
                 // 同时启动 TCP 和 UDP 转发
-                const tcp_thread = try std.Thread.spawn(.{}, startTcpForward, .{
+                const tcp_thread = try std.Thread.spawn(getThreadConfig(), startTcpForward, .{
                     allocator,
                     project.listen_port,
                     project.target_address,
@@ -371,7 +368,7 @@ pub fn startForwarding(allocator: std.mem.Allocator, project: types.Project) !vo
                 });
                 tcp_thread.detach();
 
-                const udp_thread = try std.Thread.spawn(.{}, startUdpForward, .{
+                const udp_thread = try std.Thread.spawn(getThreadConfig(), startUdpForward, .{
                     allocator,
                     project.listen_port,
                     project.target_address,
@@ -436,7 +433,7 @@ fn startForwardingForMapping(
 
         switch (mapping.protocol) {
             .tcp => {
-                const tcp_thread = try std.Thread.spawn(.{}, startTcpForward, .{
+                const tcp_thread = try std.Thread.spawn(getThreadConfig(), startTcpForward, .{
                     allocator,
                     listen_port,
                     project.target_address,
@@ -446,7 +443,7 @@ fn startForwardingForMapping(
                 tcp_thread.detach();
             },
             .udp => {
-                const udp_thread = try std.Thread.spawn(.{}, startUdpForward, .{
+                const udp_thread = try std.Thread.spawn(getThreadConfig(), startUdpForward, .{
                     allocator,
                     listen_port,
                     project.target_address,
@@ -456,7 +453,7 @@ fn startForwardingForMapping(
                 udp_thread.detach();
             },
             .both => {
-                const tcp_thread = try std.Thread.spawn(.{}, startTcpForward, .{
+                const tcp_thread = try std.Thread.spawn(getThreadConfig(), startTcpForward, .{
                     allocator,
                     listen_port,
                     project.target_address,
@@ -465,7 +462,7 @@ fn startForwardingForMapping(
                 });
                 tcp_thread.detach();
 
-                const udp_thread = try std.Thread.spawn(.{}, startUdpForward, .{
+                const udp_thread = try std.Thread.spawn(getThreadConfig(), startUdpForward, .{
                     allocator,
                     listen_port,
                     project.target_address,
@@ -485,6 +482,7 @@ fn startTcpForward(
     target_port: u16,
     family: types.AddressFamily,
 ) void {
+    // 这是一个长时间运行的线程，栈大小保持默认或者稍微减小均可
     var tcp_forwarder = TcpForwarder.init(allocator, listen_port, target_address, target_port, family);
     tcp_forwarder.start() catch |err| {
         std.debug.print("[TCP] Forward error: {any}\n", .{err});
