@@ -73,12 +73,13 @@ fn parseJsonZones(
     }
 }
 
-pub fn loadFromJsonFile(allocator: std.mem.Allocator, path: []const u8) !types.Config {
-    std.fs.cwd().access(path, .{}) catch |err| {
+pub fn loadFromJsonFile(io: std.Io, allocator: std.mem.Allocator, path: []const u8) !types.Config {
+    std.Io.Dir.access(std.Io.Dir.cwd(), io, path, .{ .read = true }) catch |err| {
         std.debug.print("File not found: {s}\n", .{path});
         return err;
     };
-    const json_text = std.fs.cwd().readFileAlloc(allocator, path, 1 << 20) catch return types.ConfigError.JsonParseError;
+
+    const json_text = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch return types.ConfigError.JsonParseError;
     defer allocator.free(json_text);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_text, .{}) catch return types.ConfigError.JsonParseError;

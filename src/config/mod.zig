@@ -32,7 +32,7 @@ pub const loadFromUci = uci_loader.loadFromUci;
 
 const json_loader = if (build_options.uci_mode)
     struct {
-        pub fn loadFromJsonFile(_: std.mem.Allocator, _: []const u8) !Config {
+        pub fn loadFromJsonFile(_: std.Io, _: std.mem.Allocator, _: []const u8) !Config {
             return ConfigError.UnsupportedFeature;
         }
     }

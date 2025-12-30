@@ -23,16 +23,16 @@ pub fn main() !void {
         gpa = GPAType{};
         allocator = gpa.?.allocator();
     }
-    var threaded: std.Io.Threaded = .init(allocator, .{});
+    var threaded: Io.Threaded = .init_single_threaded;
+    // var threaded: std.Io.Threaded = .init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-
     // 解析命令行参数
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
     // 加载配置
-    var cfg = try loadConfig(allocator, args);
+    var cfg = try loadConfig(io, allocator, args);
     defer cfg.deinit(allocator);
 
     std.debug.print("PortWeaver starting with {d} project(s)...\n", .{cfg.projects.len});
@@ -49,7 +49,7 @@ pub fn main() !void {
     }
 }
 /// 根据编译选项和命令行参数加载配置
-fn loadConfig(allocator: std.mem.Allocator, args: []const []const u8) !config.Config {
+fn loadConfig(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !config.Config {
     if (build_options.uci_mode) {
         // UCI 模式：直接从 UCI 加载配置
         std.debug.print("Loading configuration from UCI...\n", .{});
@@ -61,7 +61,7 @@ fn loadConfig(allocator: std.mem.Allocator, args: []const []const u8) !config.Co
         // JSON 模式：需要通过 -c 参数指定配置文件
         const config_file = try parseConfigFile(args);
         std.debug.print("Loading configuration from JSON file: {s}\n", .{config_file});
-        return try config.loadFromJsonFile(allocator, config_file);
+        return try config.loadFromJsonFile(io, allocator, config_file);
     }
 }
 
