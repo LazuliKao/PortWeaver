@@ -7,9 +7,14 @@ const std = @import("std");
 // build runner to parallelize the build automatically (and the cache system to
 // know when a step doesn't need to be re-run).
 pub fn build(b: *std.Build) void {
-    const uci_mode = b.option(bool, "uci", "UCI Mode") orelse false;
     const options = b.addOptions();
+
+    const uci_mode = b.option(bool, "uci", "UCI Mode") orelse false;
     options.addOption(bool, "uci_mode", uci_mode);
+
+    const interactive = b.option(bool, "interactive", "Interactive Mode") orelse false;
+    options.addOption(bool, "interactive_mode", interactive);
+
     const options_mod = options.createModule();
 
     // Standard target options allow the person running `zig build` to choose

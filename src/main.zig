@@ -62,7 +62,17 @@ fn parseConfigFile(args: []const []const u8) ![]const u8 {
     std.debug.print("No config file specified, using default: config.json\n", .{});
     return "config.json";
 }
-
+pub fn readline(allocator: std.mem.Allocator, stdin: *std.io.Reader) ![]u8 {
+    // if (raw) {
+    // return stdin.adaptToOldInterface().readAllAlloc(allocator, std.math.maxInt(usize));
+    // } else {
+    var bytes: std.io.Writer.Allocating = .init(allocator);
+    errdefer bytes.deinit();
+    _ = try stdin.streamDelimiter(&bytes.writer, '\n');
+    _ = try stdin.takeByte();
+    return try bytes.toOwnedSlice();
+    // }
+}
 /// 应用配置：设置防火墙规则并启动应用层转发
 fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !void {
     var has_app_forward = false;
@@ -165,10 +175,28 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !void {
 
     // 如果有应用层转发，保持程序运行
     if (has_app_forward) {
-        std.debug.print("Application layer forwarding is running. Press Ctrl+C to stop.\n", .{});
-        // 保持主线程运行
-        while (true) {
-            std.Thread.sleep(std.time.ns_per_s);
+        if (build_options.interactive_mode) {
+            // 交互式命令行
+            const in = std.fs.File.stdin();
+            var in_buf: [1024]u8 = undefined;
+            const reader = in.readerStreaming(&in_buf);
+            while (true) {
+                const input = readline(allocator, &reader) catch |err| {
+                    std.debug.print("Error: Failed to read line: {any}\n", .{err});
+                };
+                if (std.mem.eql(u8, input, "q")) {
+                    std.debug.print("Quitting application layer forwarding.\n", .{});
+                    break;
+                } else {
+                    std.debug.print("Unknown command: {s}\n", .{input});
+                }
+            }
+        } else {
+            std.debug.print("Application layer forwarding is running. Press Ctrl+C to stop.\n", .{});
+            // 保持主线程运行
+            while (true) {
+                std.Thread.sleep(std.time.ns_per_s);
+            }
         }
     }
 }
