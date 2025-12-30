@@ -102,7 +102,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add C include paths for UCI library headers
-    exe.addIncludePath(b.path("deps/uci"));
+    exe.root_module.addIncludePath(b.path("deps/uci"));
 
     // For dynamic linking at runtime
     exe.linkage = .dynamic;

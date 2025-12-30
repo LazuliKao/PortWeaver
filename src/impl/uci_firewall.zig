@@ -412,10 +412,10 @@ pub fn applyFirewallRulesForProject(
 }
 
 /// 重新加载防火墙配置
-pub fn reloadFirewall(allocator: std.mem.Allocator) !void {
+pub fn reloadFirewall(io: std.Io, allocator: std.mem.Allocator) !void {
     var child = std.process.Child.init(
         &[_][]const u8{ "/etc/init.d/firewall", "reload" },
         allocator,
     );
-    _ = try child.spawnAndWait();
+    _ = try child.spawnAndWait(io);
 }

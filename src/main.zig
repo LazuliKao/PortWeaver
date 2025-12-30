@@ -3,6 +3,7 @@ const build_options = @import("build_options");
 const config = @import("config/mod.zig");
 const app_forward = @import("impl/app_forward.zig");
 const builtin = @import("builtin");
+const Io = std.Io;
 // 仅在 UCI 模式下导入 UCI 相关模块
 const firewall = if (build_options.uci_mode) @import("impl/uci_firewall.zig") else void;
 const uci = if (build_options.uci_mode) @import("uci/mod.zig") else void;
@@ -22,6 +23,10 @@ pub fn main() !void {
         gpa = GPAType{};
         allocator = gpa.?.allocator();
     }
+    var threaded: std.Io.Threaded = .init(allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     // 解析命令行参数
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -33,13 +38,13 @@ pub fn main() !void {
     std.debug.print("PortWeaver starting with {d} project(s)...\n", .{cfg.projects.len});
 
     // 应用配置并启动服务
-    const has_app_forward = try applyConfig(allocator, cfg);
+    const has_app_forward = try applyConfig(io, allocator, cfg);
     std.debug.print("PortWeaver started successfully.\n", .{});
     // 如果有应用层转发，保持程序运行
     if (has_app_forward) {
         std.log.info("Application layer forwarding is running. Press Ctrl+C to stop.\n", .{});
         while (true) {
-            std.Thread.sleep(std.time.ns_per_s);
+            io.sleep(std.Io.Duration.fromSeconds(1), .awake) catch {};
         }
     }
 }
@@ -80,7 +85,7 @@ fn parseConfigFile(args: []const []const u8) ![]const u8 {
 }
 
 /// 应用配置：设置防火墙规则并启动应用层转发
-fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
+fn applyConfig(io: Io, allocator: std.mem.Allocator, cfg: config.Config) !bool {
     var has_app_forward = false;
 
     // 初始化 UCI 上下文（如果需要配置防火墙）
@@ -134,10 +139,9 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
                 thread.detach();
             }
         }
-
         // 重新加载防火墙配置
         std.debug.print("Reloading firewall...\n", .{});
-        firewall.reloadFirewall(allocator) catch |err| {
+        firewall.reloadFirewall(io, allocator) catch |err| {
             std.debug.print("Warning: Failed to reload firewall: {any}\n", .{err});
         };
     } else {
@@ -187,7 +191,9 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
 
 /// 在独立线程中启动转发
 fn startForwardingThread(allocator: std.mem.Allocator, project: config.Project) void {
-    app_forward.startForwarding(allocator, project) catch |err| {
-        std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ project.remark, err });
-    };
+    _ = allocator;
+    _ = project;
+    // app_forward.startForwarding(allocator, project) catch |err| {
+    //     std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ project.remark, err });
+    // };
 }
