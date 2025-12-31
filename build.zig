@@ -1,5 +1,123 @@
 const std = @import("std");
 
+fn addLibuv(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+    const uv = b.addLibrary(.{
+        .name = "uv",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .link_libc = true,
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    uv.addIncludePath(b.path("deps/libuv/include"));
+    // libuv has internal headers included from its own C sources.
+    uv.addIncludePath(b.path("deps/libuv/src"));
+
+    // Base sources from deps/libuv/CMakeLists.txt (uv_sources)
+    uv.addCSourceFiles(.{
+        .files = &.{
+            "deps/libuv/src/fs-poll.c",
+            "deps/libuv/src/idna.c",
+            "deps/libuv/src/inet.c",
+            "deps/libuv/src/random.c",
+            "deps/libuv/src/strscpy.c",
+            "deps/libuv/src/strtok.c",
+            "deps/libuv/src/thread-common.c",
+            "deps/libuv/src/threadpool.c",
+            "deps/libuv/src/timer.c",
+            "deps/libuv/src/uv-common.c",
+            "deps/libuv/src/uv-data-getter-setters.c",
+            "deps/libuv/src/version.c",
+        },
+        .flags = &.{},
+    });
+    const os_tag = target.result.os.tag;
+    if (os_tag == .windows) {
+        uv.root_module.addCMacro("WIN32_LEAN_AND_MEAN", "1");
+        uv.root_module.addCMacro("_WIN32_WINNT", "0x0A00");
+        uv.root_module.addCMacro("_CRT_DECLARE_NONSTDC_NAMES", "0");
+
+        uv.addCSourceFiles(.{
+            .files = &.{
+                "deps/libuv/src/win/async.c",
+                "deps/libuv/src/win/core.c",
+                "deps/libuv/src/win/detect-wakeup.c",
+                "deps/libuv/src/win/dl.c",
+                "deps/libuv/src/win/error.c",
+                "deps/libuv/src/win/fs.c",
+                "deps/libuv/src/win/fs-event.c",
+                "deps/libuv/src/win/getaddrinfo.c",
+                "deps/libuv/src/win/getnameinfo.c",
+                "deps/libuv/src/win/handle.c",
+                "deps/libuv/src/win/loop-watcher.c",
+                "deps/libuv/src/win/pipe.c",
+                "deps/libuv/src/win/thread.c",
+                "deps/libuv/src/win/poll.c",
+                "deps/libuv/src/win/process.c",
+                "deps/libuv/src/win/process-stdio.c",
+                "deps/libuv/src/win/signal.c",
+                "deps/libuv/src/win/snprintf.c",
+                "deps/libuv/src/win/stream.c",
+                "deps/libuv/src/win/tcp.c",
+                "deps/libuv/src/win/tty.c",
+                "deps/libuv/src/win/udp.c",
+                "deps/libuv/src/win/util.c",
+                "deps/libuv/src/win/winapi.c",
+                "deps/libuv/src/win/winsock.c",
+            },
+            .flags = &.{},
+        });
+    } else {
+        // Unix-like base (non-Windows) from deps/libuv/CMakeLists.txt
+        // uv.root_module.addCMacro("_FILE_OFFSET_BITS", "64");
+        // uv.root_module.addCMacro("_LARGEFILE_SOURCE", "1");
+
+        uv.addCSourceFiles(.{
+            .files = &.{
+                "deps/libuv/src/unix/async.c",
+                "deps/libuv/src/unix/core.c",
+                "deps/libuv/src/unix/dl.c",
+                "deps/libuv/src/unix/fs.c",
+                "deps/libuv/src/unix/getaddrinfo.c",
+                "deps/libuv/src/unix/getnameinfo.c",
+                "deps/libuv/src/unix/loop-watcher.c",
+                "deps/libuv/src/unix/loop.c",
+                "deps/libuv/src/unix/pipe.c",
+                "deps/libuv/src/unix/poll.c",
+                "deps/libuv/src/unix/process.c",
+                "deps/libuv/src/unix/random-devurandom.c",
+                "deps/libuv/src/unix/signal.c",
+                "deps/libuv/src/unix/stream.c",
+                "deps/libuv/src/unix/tcp.c",
+                "deps/libuv/src/unix/thread.c",
+                "deps/libuv/src/unix/tty.c",
+                "deps/libuv/src/unix/udp.c",
+            },
+            .flags = &.{},
+        });
+
+        if (os_tag == .linux) {
+            // Linux specifics from deps/libuv/CMakeLists.txt
+            uv.root_module.addCMacro("_GNU_SOURCE", "1");
+            uv.root_module.addCMacro("_POSIX_C_SOURCE", "200112");
+            uv.addCSourceFiles(.{
+                .files = &.{
+                    "deps/libuv/src/unix/proctitle.c",
+                    "deps/libuv/src/unix/linux.c",
+                    "deps/libuv/src/unix/procfs-exepath.c",
+                    "deps/libuv/src/unix/random-getrandom.c",
+                    "deps/libuv/src/unix/random-sysctl-linux.c",
+                },
+                .flags = &.{},
+            });
+        }
+    }
+
+    return uv;
+}
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -100,6 +218,41 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    // Build and link libuv from deps/libuv.
+    const uv = addLibuv(b, target, optimize);
+    exe.linkLibrary(uv);
+    exe.addIncludePath(b.path("deps/libuv/include"));
+    exe.addIncludePath(b.path("deps/libuv/src"));
+    exe.addIncludePath(b.path("src"));
+
+    // Add C forwarder implementation
+    exe.addCSourceFile(.{
+        .file = b.path("src/forwarder.c"),
+        .flags = &.{},
+    });
+
+    // libuv's platform link requirements (from deps/libuv/CMakeLists.txt)
+    switch (target.result.os.tag) {
+        .windows => {
+            exe.linkSystemLibrary("psapi");
+            exe.linkSystemLibrary("user32");
+            exe.linkSystemLibrary("advapi32");
+            exe.linkSystemLibrary("iphlpapi");
+            exe.linkSystemLibrary("userenv");
+            exe.linkSystemLibrary("ws2_32");
+            exe.linkSystemLibrary("dbghelp");
+            exe.linkSystemLibrary("ole32");
+            exe.linkSystemLibrary("shell32");
+        },
+        .linux => {
+            exe.linkSystemLibrary("pthread");
+            exe.linkSystemLibrary("dl");
+            exe.linkSystemLibrary("rt");
+            exe.linkSystemLibrary("m");
+        },
+        else => {},
+    }
 
     // Add C include paths for UCI library headers
     exe.addIncludePath(b.path("deps/uci"));

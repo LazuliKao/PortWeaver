@@ -1,0 +1,9 @@
+const std = @import("std");
+
+pub const c = @cImport({
+    @cInclude("forwarder.h");
+});
+
+pub fn versionString() [:0]const u8 {
+    return std.mem.span(c.uv_get_version_string());
+}
