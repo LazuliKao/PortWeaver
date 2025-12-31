@@ -97,6 +97,7 @@ pub fn build(b: *std.Build) void {
                 // importing modules from different packages).
                 .{ .name = "portweaver", .module = mod },
                 .{ .name = "build_options", .module = options_mod },
+                .{ .name = "xev", .module = b.dependency("libxev", .{ .target = target, .optimize = optimize }).module("xev") },
             },
         }),
     });

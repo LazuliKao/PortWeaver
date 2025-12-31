@@ -3,10 +3,38 @@ const build_options = @import("build_options");
 const config = @import("config/mod.zig");
 const app_forward = @import("impl/app_forward.zig");
 const builtin = @import("builtin");
+const xev = @import("xev");
+pub fn test1() !void {
+    var loop = try xev.Loop.init(.{});
+    defer loop.deinit();
+
+    const w = try xev.Timer.init();
+    defer w.deinit();
+    // 5s timer
+    var c: xev.Completion = undefined;
+    w.run(&loop, &c, 15000, void, null, &timerCallback);
+
+    try loop.run(.until_done);
+}
+
+fn timerCallback(
+    userdata: ?*void,
+    loop: *xev.Loop,
+    c: *xev.Completion,
+    result: xev.Timer.RunError!void,
+) xev.CallbackAction {
+    _ = userdata;
+    _ = loop;
+    _ = c;
+    _ = result catch unreachable;
+    return .disarm;
+}
+
 // 仅在 UCI 模式下导入 UCI 相关模块
 const firewall = if (build_options.uci_mode) @import("impl/uci_firewall.zig") else void;
 const uci = if (build_options.uci_mode) @import("uci/mod.zig") else void;
 pub fn main() !void {
+    try test1();
     const GPAType = std.heap.GeneralPurposeAllocator(.{});
     var gpa: ?GPAType = null;
     // 默认使用 c_allocator

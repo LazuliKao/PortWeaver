@@ -32,6 +32,10 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
+        .libxev = .{
+            .url = "https://github.com/mitchellh/libxev/archive/46fa9b74bafb0b9c151a8035fdb6b01ec68581e4.tar.gz",
+            .hash = "libxev-0.0.0-86vtc0IbEwDsp-ljrhdEWhf2TYBvSrqqgNAPQwtfX8Eg",
+        },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding
