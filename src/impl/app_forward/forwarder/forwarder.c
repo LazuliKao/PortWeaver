@@ -60,8 +60,10 @@ static void tcp_close_cb(uv_handle_t* handle) {
 		// both handles closed -> free ctx
 		if (ctx->use_allocator && ctx->forwarder && ctx->forwarder->allocator && ctx->forwarder->allocator->free) {
 			ctx->forwarder->allocator->free(ctx->forwarder->allocator->ctx, ctx);
+            handle->data = NULL;
 		} else {
-			free(ctx);
+            free(ctx);
+            handle->data = NULL;
 		}
 	}
 }
@@ -192,7 +194,7 @@ static void tcp_on_new_connection(uv_stream_t* server, int status) {
 		fprintf(stderr, "[tcp_on_new_connection] malloc for ctx failed\n");
 		return;
 	}
-	ctx->use_allocator = 0;
+	ctx->use_allocator = 1;
 	memset(ctx, 0, sizeof(*ctx));
 	ctx->forwarder = fwd;
 	ctx->closed = 0;
