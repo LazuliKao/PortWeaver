@@ -52,22 +52,6 @@ struct tcp_forwarder {
 	struct sockaddr_storage cached_dest_addr; // added: cache destination addr
 };
 
-static void tcp_close_cb(uv_handle_t* handle) {
-	tcp_conn_ctx_t *ctx = (tcp_conn_ctx_t*)handle->data;
-	if (!ctx) return;
-	ctx->close_count++;
-	if (ctx->close_count >= 2) {
-		// both handles closed -> free ctx
-		if (ctx->use_allocator && ctx->forwarder && ctx->forwarder->allocator && ctx->forwarder->allocator->free) {
-			ctx->forwarder->allocator->free(ctx->forwarder->allocator->ctx, ctx);
-            handle->data = NULL;
-		} else {
-            free(ctx);
-            handle->data = NULL;
-		}
-	}
-}
-
 static void tcp_on_client_write(uv_write_t* req, int status) {
 	if (status != 0) {
 		fprintf(stderr, "[tcp_on_client_write] write error: %s\n", uv_strerror(status));
@@ -108,7 +92,7 @@ static void tcp_on_client_read(uv_stream_t* client, ssize_t nread, const uv_buf_
 		if (!uv_is_closing((uv_handle_t*)&ctx->target)) {
 			uv_shutdown(&ctx->shutdown_req_target, (uv_stream_t*)&ctx->target, NULL);
 		}
-		if (!uv_is_closing((uv_handle_t*)client)) uv_close((uv_handle_t*)client, tcp_close_cb);
+		if (!uv_is_closing((uv_handle_t*)client)) uv_close((uv_handle_t*)client, NULL);
 	}
 }
 
@@ -136,7 +120,7 @@ static void tcp_on_target_read(uv_stream_t* target, ssize_t nread, const uv_buf_
 		if (!uv_is_closing((uv_handle_t*)&ctx->client)) {
 			uv_shutdown(&ctx->shutdown_req_client, (uv_stream_t*)&ctx->client, NULL);
 		}
-		if (!uv_is_closing((uv_handle_t*)target)) uv_close((uv_handle_t*)target, tcp_close_cb);
+		if (!uv_is_closing((uv_handle_t*)target)) uv_close((uv_handle_t*)target, NULL);
 	}
 }
 
@@ -175,8 +159,8 @@ static void tcp_on_connect(uv_connect_t* req, int status) {
 		uv_read_start((uv_stream_t*)&ctx->client, tcp_alloc_cb, tcp_on_client_read);
 		uv_read_start((uv_stream_t*)&ctx->target, tcp_alloc_cb, tcp_on_target_read);
 	} else {
-		uv_close((uv_handle_t*)&ctx->client, tcp_close_cb);
-		uv_close((uv_handle_t*)&ctx->target, tcp_close_cb);
+		uv_close((uv_handle_t*)&ctx->client, NULL);
+		uv_close((uv_handle_t*)&ctx->target, NULL);
 	}
 }
 
@@ -208,8 +192,8 @@ static void tcp_on_new_connection(uv_stream_t* server, int status) {
 		// Use cached target address (avoid per-connection uv_ip*_addr)
 		uv_tcp_connect(&ctx->connect_req, &ctx->target, (const struct sockaddr*)&fwd->cached_dest_addr, tcp_on_connect);
 	} else {
-		uv_close((uv_handle_t*)&ctx->client, tcp_close_cb);
-		uv_close((uv_handle_t*)&ctx->target, tcp_close_cb);
+		uv_close((uv_handle_t*)&ctx->client, NULL);
+		uv_close((uv_handle_t*)&ctx->target, NULL);
 	}
 }
 
@@ -283,7 +267,7 @@ void tcp_forwarder_stop(tcp_forwarder_t* forwarder) {
 
 void tcp_forwarder_destroy(tcp_forwarder_t* forwarder) {
 	if (!forwarder) return;
-	// stop loop and close all handles; ensure per-connection ctx are freed by tcp_close_cb
+	// stop loop and close all handles; ensure per-connection ctx are freed by NULL
 	uv_stop(forwarder->loop);
 	uv_walk(forwarder->loop, tcp_walk_close_cb, forwarder);
 	while (uv_loop_alive(forwarder->loop)) uv_run(forwarder->loop, UV_RUN_DEFAULT);
@@ -326,7 +310,7 @@ static void tcp_walk_close_cb(uv_handle_t* handle, void* arg) {
 	if (handle == (uv_handle_t*)&fwd->server) {
 		if (!uv_is_closing(handle)) uv_close(handle, NULL);
 	} else if (handle->type == UV_TCP) {
-		if (!uv_is_closing(handle)) uv_close(handle, tcp_close_cb);
+		if (!uv_is_closing(handle)) uv_close(handle, NULL);
 	} else {
 		if (!uv_is_closing(handle)) uv_close(handle, NULL);
 	}
