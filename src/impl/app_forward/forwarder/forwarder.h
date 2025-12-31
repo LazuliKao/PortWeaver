@@ -26,34 +26,20 @@ typedef struct udp_client_session udp_client_session_t;
 // Expose an implementation alias used by the C file
 typedef struct udp_forwarder udp_forwarder_t_impl;
 
-// Memory allocator callbacks (for Zig allocator integration)
-typedef void* (*alloc_fn)(void* ctx, size_t size);
-typedef void (*free_fn)(void* ctx, void* ptr);
-
-typedef struct {
-    void* ctx;
-    alloc_fn alloc;
-    free_fn free;
-} allocator_t;
-
 // Full UDP forwarder definition (kept here so C code can access members)
 struct udp_forwarder {
-	allocator_t *allocator;
-	allocator_t allocator_storage;
 	uv_loop_t *loop;
 	uv_udp_t server;
 	char *target_address;
 	uint16_t target_port;
 	addr_family_t family;
 	int running;
-	int use_allocator; /* runtime switch: when set, use provided allocator callbacks */
 	udp_client_session_t *sessions;
 	struct sockaddr_storage cached_dest_addr;
 };
 
 // TCP Forwarder API
 tcp_forwarder_t* tcp_forwarder_create(
-    allocator_t* allocator,
     uint16_t listen_port,
     const char* target_address,
     uint16_t target_port,
@@ -66,7 +52,6 @@ void tcp_forwarder_destroy(tcp_forwarder_t* forwarder);
 
 // UDP Forwarder API
 udp_forwarder_t* udp_forwarder_create(
-    allocator_t* allocator,
     uint16_t listen_port,
     const char* target_address,
     uint16_t target_port,

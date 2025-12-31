@@ -28,8 +28,6 @@ const AllocatorContext = struct {
 pub const TcpForwarder = struct {
     allocator: std.mem.Allocator,
     forwarder: *c.tcp_forwarder_t,
-    alloc_ctx: AllocatorContext,
-    c_allocator: c.allocator_t,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -40,13 +38,6 @@ pub const TcpForwarder = struct {
     ) TcpForwarder {
         var self: TcpForwarder = undefined;
         self.allocator = allocator;
-        self.alloc_ctx = AllocatorContext{ .allocator = allocator };
-
-        self.c_allocator = c.allocator_t{
-            .ctx = @ptrCast(&self.alloc_ctx),
-            .alloc = AllocatorContext.alloc,
-            .free = AllocatorContext.free,
-        };
 
         const target_z = allocator.dupeZ(u8, target_address) catch unreachable;
         defer allocator.free(target_z);
@@ -58,7 +49,6 @@ pub const TcpForwarder = struct {
         };
 
         self.forwarder = c.tcp_forwarder_create(
-            &self.c_allocator,
             listen_port,
             target_z.ptr,
             target_port,

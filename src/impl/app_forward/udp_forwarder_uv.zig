@@ -32,7 +32,6 @@ pub const UdpForwarder = struct {
     family: common.AddressFamily,
 
     forwarder: ?*c.udp_forwarder_t = null,
-    alloc_ctx: AllocatorContext,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -47,7 +46,6 @@ pub const UdpForwarder = struct {
             .target_address = target_address,
             .target_port = target_port,
             .family = family,
-            .alloc_ctx = .{ .allocator = allocator },
         };
     }
 
@@ -68,13 +66,7 @@ pub const UdpForwarder = struct {
             .any => c.ADDR_FAMILY_ANY,
         };
 
-        var allocator_c = c.allocator_t{
-            .ctx = @ptrCast(&self.alloc_ctx),
-            .alloc = AllocatorContext.alloc,
-            .free = AllocatorContext.free,
-        };
-
-        const forwarder = c.udp_forwarder_create(&allocator_c, self.listen_port, target_host_z.ptr, self.target_port, addr_family);
+        const forwarder = c.udp_forwarder_create(self.listen_port, target_host_z.ptr, self.target_port, addr_family);
         if (forwarder == null) return ForwardError.ListenFailed;
         self.forwarder = forwarder;
 
