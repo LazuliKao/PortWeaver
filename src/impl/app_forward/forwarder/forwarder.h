@@ -46,6 +46,7 @@ struct udp_forwarder {
 	uint16_t target_port;
 	addr_family_t family;
 	int running;
+	int use_allocator; /* runtime switch: when set, use provided allocator callbacks */
 	udp_client_session_t *sessions;
 	struct sockaddr_storage cached_dest_addr;
 };
