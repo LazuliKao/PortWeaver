@@ -1,28 +1,10 @@
 const std = @import("std");
-const uv = @import("../../uv.zig");
+const uv = @import("uv.zig");
 const common = @import("common.zig");
 
 pub const ForwardError = common.ForwardError;
 
 const c = uv.c;
-
-const AllocatorContext = struct {
-    allocator: std.mem.Allocator,
-
-    fn alloc(ctx: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque {
-        const self: *AllocatorContext = @ptrCast(@alignCast(ctx));
-        const bytes = self.allocator.alloc(u8, size) catch return null;
-        return @ptrCast(bytes.ptr);
-    }
-
-    fn free(ctx: ?*anyopaque, ptr: ?*anyopaque) callconv(.c) void {
-        const self: *AllocatorContext = @ptrCast(@alignCast(ctx));
-        if (ptr) |p| {
-            const slice: [*]u8 = @ptrCast(@alignCast(p));
-            self.allocator.free(slice[0..1]);
-        }
-    }
-};
 
 pub const UdpForwarder = struct {
     allocator: std.mem.Allocator,

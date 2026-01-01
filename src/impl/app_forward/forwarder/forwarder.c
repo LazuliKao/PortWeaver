@@ -1,11 +1,7 @@
 #include "forwarder.h"
 #include "uv.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
-#include <assert.h>
-#define DEBUG
 #ifdef DEBUG
 // --- Memory Allocator Helpers ---
 

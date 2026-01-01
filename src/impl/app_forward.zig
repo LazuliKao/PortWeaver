@@ -169,7 +169,7 @@ fn startTcpForward(
 ) void {
     var tcp_forwarder = TcpForwarder.init(allocator, listen_port, target_address, target_port, family);
     tcp_forwarder.start() catch |err| {
-        std.debug.print("[TCP] Forward error: {any}\n", .{err});
+        std.debug.print("[TCP] Forward error. Port {d}, forwarding to {s}:{d}: {any}\n", .{ listen_port, target_address, target_port, err });
     };
 }
 
@@ -183,6 +183,6 @@ fn startUdpForward(
     var udp_forwarder = UdpForwarder.init(allocator, listen_port, target_address, target_port, family);
     defer udp_forwarder.deinit();
     udp_forwarder.start() catch |err| {
-        std.debug.print("[UDP] Forward error: {any}\n", .{err});
+        std.debug.print("[UDP] Forward error. Port {d}, forwarding to {s}:{d}: {any}\n", .{ listen_port, target_address, target_port, err });
     };
 }

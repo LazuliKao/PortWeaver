@@ -10,6 +10,9 @@ fn addLibuv(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
             .optimize = optimize,
         }),
     });
+    if (optimize == .ReleaseSmall) {
+        uv.root_module.unwind_tables = .none;
+    }
 
     uv.addIncludePath(b.path("deps/libuv/include"));
     // libuv has internal headers included from its own C sources.
@@ -35,6 +38,15 @@ fn addLibuv(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
     });
     const os_tag = target.result.os.tag;
     if (os_tag == .windows) {
+        uv.root_module.linkSystemLibrary("ws2_32", .{});
+        uv.root_module.linkSystemLibrary("dbghelp", .{});
+        uv.root_module.linkSystemLibrary("ole32", .{});
+        uv.root_module.linkSystemLibrary("userenv", .{});
+        uv.root_module.linkSystemLibrary("iphlpapi", .{});
+        // uv.root_module.linkSystemLibrary("advapi32");
+        // exe.linkSystemLibrary("user32");
+        // exe.linkSystemLibrary("shell32");
+        // exe.linkSystemLibrary("psapi");
         uv.root_module.addCMacro("WIN32_LEAN_AND_MEAN", "1");
         uv.root_module.addCMacro("_WIN32_WINNT", "0x0A00");
         uv.root_module.addCMacro("_CRT_DECLARE_NONSTDC_NAMES", "0");
@@ -99,6 +111,10 @@ fn addLibuv(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.built
         });
 
         if (os_tag == .linux) {
+            uv.root_module.linkSystemLibrary("pthread", .{});
+            uv.root_module.linkSystemLibrary("dl", .{});
+            uv.root_module.linkSystemLibrary("rt", .{});
+            uv.root_module.linkSystemLibrary("m", .{});
             // Linux specifics from deps/libuv/CMakeLists.txt
             uv.root_module.addCMacro("_GNU_SOURCE", "1");
             uv.root_module.addCMacro("_POSIX_C_SOURCE", "200112");
@@ -169,6 +185,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    if (optimize == .ReleaseSmall) {
+        mod.unwind_tables = .none;
+    }
     mod.addImport("build_options", options_mod);
 
     // Here we define an executable. An executable needs to have a root module
@@ -219,41 +238,22 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    if (optimize == .ReleaseSmall) {
+        exe.root_module.unwind_tables = .none;
+    }
     // Build and link libuv from deps/libuv.
     const uv = addLibuv(b, target, optimize);
     exe.linkLibrary(uv);
     exe.addIncludePath(b.path("deps/libuv/include"));
     exe.addIncludePath(b.path("deps/libuv/src"));
-    exe.addIncludePath(b.path("src"));
 
     // Add C forwarder implementation
+
     exe.addIncludePath(b.path("src/impl/app_forward/forwarder"));
     exe.addCSourceFile(.{
         .file = b.path("src/impl/app_forward/forwarder/forwarder.c"),
-        .flags = &.{},
+        .flags = if (optimize == .Debug) &.{"-DDEBUG"} else &.{},
     });
-
-    // libuv's platform link requirements (from deps/libuv/CMakeLists.txt)
-    switch (target.result.os.tag) {
-        .windows => {
-            exe.linkSystemLibrary("psapi");
-            exe.linkSystemLibrary("user32");
-            exe.linkSystemLibrary("advapi32");
-            exe.linkSystemLibrary("iphlpapi");
-            exe.linkSystemLibrary("userenv");
-            exe.linkSystemLibrary("ws2_32");
-            exe.linkSystemLibrary("dbghelp");
-            exe.linkSystemLibrary("ole32");
-            exe.linkSystemLibrary("shell32");
-        },
-        .linux => {
-            exe.linkSystemLibrary("pthread");
-            exe.linkSystemLibrary("dl");
-            exe.linkSystemLibrary("rt");
-            exe.linkSystemLibrary("m");
-        },
-        else => {},
-    }
 
     // Add C include paths for UCI library headers
     exe.addIncludePath(b.path("deps/uci"));

@@ -2,7 +2,6 @@ const std = @import("std");
 const build_options = @import("build_options");
 const config = @import("config/mod.zig");
 const app_forward = @import("impl/app_forward.zig");
-const uv = @import("uv.zig");
 const builtin = @import("builtin");
 // 仅在 UCI 模式下导入 UCI 相关模块
 const firewall = if (build_options.uci_mode) @import("impl/uci_firewall.zig") else void;
@@ -31,7 +30,7 @@ pub fn main() !void {
     var cfg = try loadConfig(allocator, args);
     defer cfg.deinit(allocator);
 
-    std.debug.print("libuv: {s}\n", .{uv.versionString()});
+    @import("impl/app_forward/uv.zig").printVersion();
     std.debug.print("PortWeaver starting with {d} project(s)...\n", .{cfg.projects.len});
 
     // 应用配置并启动服务
