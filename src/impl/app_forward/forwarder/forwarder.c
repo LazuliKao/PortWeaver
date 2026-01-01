@@ -560,10 +560,13 @@ typedef struct udp_client_session
     struct udp_client_session *next;
     uv_timer_t timeout_timer; // timer for session timeout
     uint64_t last_activity;   // timestamp of last activity (milliseconds)
+    int close_count;          // count of closed handles (timer + sock = 2)
 } udp_client_session_t;
 
 // Session timeout in milliseconds (5 minutes of inactivity)
-#define UDP_SESSION_TIMEOUT_MS 300000
+// #define UDP_SESSION_TIMEOUT_MS 300000
+// 5s
+#define UDP_SESSION_TIMEOUT_MS 5000
 
 static void udp_session_close_cb(uv_handle_t *handle);
 static void udp_session_timeout_cb(uv_timer_t *timer);
@@ -596,15 +599,18 @@ static void udp_session_remove(udp_forwarder_t_impl *fwd, udp_client_session_t *
     }
 }
 
-// Close callback for UDP session (called after all handles are closed)
+// Close callback for UDP session (called after each handle closes)
 static void udp_session_close_cb(uv_handle_t *handle)
 {
     if (!handle || !handle->data)
         return;
     udp_client_session_t *session = (udp_client_session_t *)handle->data;
     
-    // Check if this is the sock handle (the last one to close)
-    if (handle == (uv_handle_t *)&session->sock)
+    // Increment close count
+    session->close_count++;
+    
+    // Only free when both handles (timer + sock) are closed
+    if (session->close_count >= 2)
     {
         // Remove from session list and free
         udp_session_remove((udp_forwarder_t_impl *)session->fwd, session);
@@ -629,11 +635,10 @@ static void udp_session_timeout_cb(uv_timer_t *timer)
         // Stop receiving on the socket
         uv_udp_recv_stop(&session->sock);
         
-        // Close timer first
+        // Close both handles with the same callback
         if (!uv_is_closing((uv_handle_t *)&session->timeout_timer))
-            uv_close((uv_handle_t *)&session->timeout_timer, NULL);
+            uv_close((uv_handle_t *)&session->timeout_timer, udp_session_close_cb);
         
-        // Close socket (will trigger udp_session_close_cb)
         if (!uv_is_closing((uv_handle_t *)&session->sock))
             uv_close((uv_handle_t *)&session->sock, udp_session_close_cb);
     }
@@ -742,6 +747,7 @@ static udp_client_session_t *udp_session_create(udp_forwarder_t_impl *fwd, const
     memset(s, 0, sizeof(*s));
     s->fwd = (struct udp_forwarder *)fwd;
     s->client_addr_len = addr_len;
+    s->close_count = 0;
     memcpy(&s->client_addr, client_addr, addr_len);
     uv_udp_init(fwd->loop, &s->sock);
     s->sock.data = s;
