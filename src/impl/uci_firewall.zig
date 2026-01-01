@@ -411,11 +411,34 @@ pub fn applyFirewallRulesForProject(
     }
 }
 
+extern "c" fn fork() i32;
+extern "c" fn execve([*:0]const u8, [*:null]?[*:0]const u8, [*:null]?[*:0]const u8) i32;
+extern "c" fn waitpid(i32, *i32, i32) i32;
+
 /// 重新加载防火墙配置
 pub fn reloadFirewall(allocator: std.mem.Allocator) !void {
-    var child = std.process.Child.init(
-        &[_][]const u8{ "/etc/init.d/firewall", "reload" },
-        allocator,
-    );
-    _ = try child.spawnAndWait();
+    // 使用 fork/execve 避免复杂的 stdio 管理
+    const pid = fork();
+    if (pid < 0) {
+        return FirewallError.UciOperationFailed;
+    }
+
+    if (pid == 0) {
+        // 子进程
+        const argv = [_:null]?[*:0]const u8{
+            @ptrCast(@constCast(@as([*:0]const u8, "/etc/init.d/firewall"))),
+            @ptrCast(@constCast(@as([*:0]const u8, "reload"))),
+            null,
+        };
+        const envp = [_:null]?[*:0]const u8{null};
+
+        _ = execve("/etc/init.d/firewall", @ptrCast(@constCast(&argv)), @ptrCast(@constCast(&envp)));
+        // 如果 execve 返回则出错
+        std.process.exit(1);
+    } else {
+        // 父进程
+        var status: i32 = 0;
+        _ = allocator;
+        _ = waitpid(pid, &status, 0);
+    }
 }
