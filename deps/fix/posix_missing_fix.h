@@ -1,3 +1,8 @@
+#ifndef POSIX_MISSING_FIX_H
+#define POSIX_MISSING_FIX_H
+
+#ifdef _WIN32
+// Only define these placeholders on Windows where they're missing
 typedef struct
 {
     int __dummy;
@@ -15,5 +20,9 @@ struct sigaction
     sigset_t sa_mask;
     int sa_flags;
 };
+
 #define _SC_PAGESIZE 1001
 extern unsigned long sysconf(int name);
+#endif
+
+#endif // POSIX_MISSING_FIX_H

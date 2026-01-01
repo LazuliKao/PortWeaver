@@ -1,14 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const DynamicLibLoader = @import("../loader/dynamic_lib.zig").DynamicLibLoader;
+const ubox = @import("ubox.zig");
+const c = ubox.c;
 
-const c = @cImport({
-    @cInclude("posix_missing_fix.h");
-    @cInclude("unistd.h");
-    @cInclude("signal.h");
-    @cInclude("libubox/blobmsg_json.h");
-    @cInclude("libubus.h");
-});
 // 定义函数类型
 const ubus_connect_fn = *const fn (path: [*c]const u8) callconv(.c) ?*c.ubus_context;
 const ubus_connect_ctx_fn = *const fn (ctx: *c.ubus_context, path: [*c]const u8) callconv(.c) c_int;
@@ -81,9 +76,9 @@ fn loadFunction(comptime T: type, comptime name: [:0]const u8, cache: *?T) !T {
 }
 
 // 包装函数
-pub inline fn ubus_connect(path: [*c]const u8) !?*c.ubus_context {
+pub inline fn ubus_connect(path: ?[*c]const u8) !?*c.ubus_context {
     const func = try loadFunction(ubus_connect_fn, "ubus_connect", &fn_connect);
-    return func(path);
+    return func(path orelse @ptrFromInt(0));
 }
 
 pub inline fn ubus_connect_ctx(ctx: *c.ubus_context, path: [*c]const u8) !c_int {

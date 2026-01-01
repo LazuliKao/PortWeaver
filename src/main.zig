@@ -3,6 +3,7 @@ const build_options = @import("build_options");
 const config = @import("config/mod.zig");
 const app_forward = @import("impl/app_forward.zig");
 const builtin = @import("builtin");
+const ubus_server = if (build_options.ubus_mode) @import("ubus/server.zig") else void;
 // 仅在 UCI 模式下导入 UCI 相关模块
 const firewall = if (build_options.uci_mode) @import("impl/uci_firewall.zig") else void;
 const uci = if (build_options.uci_mode) @import("uci/mod.zig") else void;
@@ -35,6 +36,11 @@ pub fn main() !void {
 
     // 应用配置并启动服务
     const has_app_forward = try applyConfig(allocator, cfg);
+    if (build_options.ubus_mode) {
+        ubus_server.start(allocator, cfg.projects) catch |err| {
+            std.debug.print("Warning: Failed to start ubus server: {any}\n", .{err});
+        };
+    }
     std.debug.print("PortWeaver started successfully.\n", .{});
     // 如果有应用层转发，保持程序运行
     if (has_app_forward) {
