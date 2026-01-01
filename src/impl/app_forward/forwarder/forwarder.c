@@ -128,7 +128,6 @@ static void data_free(void *ptr, const char *file, int line)
     uint8_t *p = (uint8_t *)ptr - sizeof(uint32_t) * 2;
     uint32_t magic = 0;
     memcpy(&magic, p, sizeof(uint32_t));
-    // fprintf(stderr, "[data_free] attempt free user=%p header=%p magic=0x%08x\n",            ptr, (void *)p, magic);
     if (magic != DATA_MAGIC)
     {
         /* Not our allocation header or already corrupted. Log for debugging. */
@@ -145,7 +144,8 @@ static void data_free(void *ptr, const char *file, int line)
         {
             fprintf(stderr, "[data_free] ptr %p was tracked (size=%zu at %s:%d) but header corrupted, skipping free to avoid crash\n", ptr, tracked_size, tracked_file ? tracked_file : "?", tracked_line);
         }
-        return; /* avoid freeing memory not owned by our data_alloc */
+        exit(1); /* likely double free or invalid free, abort to avoid undefined behavior */
+        return;  /* avoid freeing memory not owned by our data_alloc */
     }
 
     /* Verify ownership in map and remove it */
@@ -156,20 +156,25 @@ static void data_free(void *ptr, const char *file, int line)
     {
         fprintf(stderr, "[data_free] ptr %p had valid header but was not tracked by alloc_map\n", ptr);
         /* proceed with free anyway */
+        exit(1); /* likely double free or invalid free, abort to avoid undefined behavior */
     }
     else
     {
-        // fprintf(stderr, "[data_free] ptr %p removed from alloc_map (size=%zu at %s:%d)\n", ptr, tracked_size, tracked_file ? tracked_file : "?", tracked_line);
-        if (period++ > 10)
+        // Reduce logging frequency for performance (only every 100 frees)
+        if (period++ > 100)
         {
             period = 0;
-            fprintf(stderr, "[data_free] alloc_map current size: %d\n", link_list_len(alloc_map_head));
-            for (alloc_entry_t *e = alloc_map_head; e != NULL; e = e->next)
+            int count = link_list_len(alloc_map_head);
+            fprintf(stderr, "[data_free] alloc_map current size: %d\n", count);
+            // Only print details if count is small (potential leak detection)
+            if (count > 0 && count < 10)
             {
-                // track the magic number
-                int current_magic = 0;
-                memcpy(&current_magic, (uint8_t *)e->ptr - sizeof(uint32_t) * 2, sizeof(uint32_t));
-                fprintf(stderr, "  -> user=%p size=%zu (%s:%d) magic=0x%08x\n", e->ptr, e->size, e->file ? e->file : "?", e->line, current_magic);
+                for (alloc_entry_t *e = alloc_map_head; e != NULL; e = e->next)
+                {
+                    int current_magic = 0;
+                    memcpy(&current_magic, (uint8_t *)e->ptr - sizeof(uint32_t) * 2, sizeof(uint32_t));
+                    fprintf(stderr, "  -> user=%p size=%zu (%s:%d) magic=0x%08x\n", e->ptr, e->size, e->file ? e->file : "?", e->line, current_magic);
+                }
             }
         }
     }
@@ -189,7 +194,7 @@ static void data_free(void *ptr, const char *file, int line)
     free(p);
     // fprintf(stderr, "[data_free] freed user=%p header=%p (free)\n", ptr, (void *)p);
 }
- 
+
 #define DATA_ALLOC(ctx, sz) data_alloc((sz), __FILE__, __LINE__)
 #define DATA_FREE(ctx, sz) data_free((sz), __FILE__, __LINE__)
 #else
@@ -219,7 +224,7 @@ static void tcp_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
 static void tcp_walk_close_cb(uv_handle_t *handle, void *arg);
 static void udp_walk_close_cb(uv_handle_t *handle, void *arg);
 static void udp_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf);
-static void tcp_conn_close_cb(uv_handle_t *handle); 
+static void tcp_conn_close_cb(uv_handle_t *handle);
 static int sockaddr_equal(const struct sockaddr *a, const struct sockaddr *b);
 
 struct tcp_forwarder
@@ -366,18 +371,20 @@ static void tcp_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
     buf->len = (unsigned int)suggested_size;
 }
 
-// UDP buffer allocation callback
+// UDP buffer allocation callback (optimized for typical UDP packet size)
+#define UDP_BUFFER_SIZE 65536 // Max UDP datagram size
 static void udp_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 {
+    (void)suggested_size; // Ignore libuv suggestion, use optimized size
     if (handle && handle->data)
     {
         struct udp_forwarder *fwd = (struct udp_forwarder *)handle->data;
-        buf->base = (char *)DATA_ALLOC(fwd, suggested_size);
-        buf->len = (unsigned int)suggested_size;
+        buf->base = (char *)DATA_ALLOC(fwd, UDP_BUFFER_SIZE);
+        buf->len = UDP_BUFFER_SIZE;
         return;
     }
-    buf->base = (char *)malloc(suggested_size);
-    buf->len = (unsigned int)suggested_size;
+    buf->base = (char *)malloc(UDP_BUFFER_SIZE);
+    buf->len = UDP_BUFFER_SIZE;
 }
 
 // Compare two sockaddr structures for equality (supports IPv4 and IPv6)
@@ -571,6 +578,27 @@ typedef struct udp_client_session
 static void udp_session_close_cb(uv_handle_t *handle);
 static void udp_session_timeout_cb(uv_timer_t *timer);
 
+// Hash function for sockaddr (for fast session lookup)
+static inline uint32_t sockaddr_hash(const struct sockaddr *addr)
+{
+    uint32_t hash = 5381;
+    if (addr->sa_family == AF_INET)
+    {
+        const struct sockaddr_in *a4 = (const struct sockaddr_in *)addr;
+        hash = ((hash << 5) + hash) ^ a4->sin_addr.s_addr;
+        hash = ((hash << 5) + hash) ^ a4->sin_port;
+    }
+    else if (addr->sa_family == AF_INET6)
+    {
+        const struct sockaddr_in6 *a6 = (const struct sockaddr_in6 *)addr;
+        const uint32_t *words = (const uint32_t *)&a6->sin6_addr;
+        for (int i = 0; i < 4; i++)
+            hash = ((hash << 5) + hash) ^ words[i];
+        hash = ((hash << 5) + hash) ^ a6->sin6_port;
+    }
+    return hash % UDP_SESSION_HASH_SIZE;
+}
+
 static void udp_on_send(uv_udp_send_t *req, int status)
 {
     fwd_udp_send_req_t *fw = (fwd_udp_send_req_t *)req;
@@ -584,10 +612,24 @@ static void udp_on_send(uv_udp_send_t *req, int status)
     DATA_FREE(fwd, fw);
 }
 
-// Remove session from forwarder's session list
+// Remove session from forwarder's session list and hash table
 static void udp_session_remove(udp_forwarder_t_impl *fwd, udp_client_session_t *session)
 {
+    // Remove from linked list
     udp_client_session_t **pp = &fwd->sessions;
+    while (*pp)
+    {
+        if (*pp == session)
+        {
+            *pp = session->next;
+            break;
+        }
+        pp = &(*pp)->next;
+    }
+
+    // Remove from hash table
+    uint32_t hash = sockaddr_hash((const struct sockaddr *)&session->client_addr);
+    pp = &fwd->session_hash[hash];
     while (*pp)
     {
         if (*pp == session)
@@ -605,10 +647,10 @@ static void udp_session_close_cb(uv_handle_t *handle)
     if (!handle || !handle->data)
         return;
     udp_client_session_t *session = (udp_client_session_t *)handle->data;
-    
+
     // Increment close count
     session->close_count++;
-    
+
     // Only free when both handles (timer + sock) are closed
     if (session->close_count >= 2)
     {
@@ -624,21 +666,21 @@ static void udp_session_timeout_cb(uv_timer_t *timer)
     udp_client_session_t *session = (udp_client_session_t *)timer->data;
     if (!session)
         return;
-    
+
     uint64_t now = uv_now(timer->loop);
     uint64_t elapsed = now - session->last_activity;
-    
+
     if (elapsed >= UDP_SESSION_TIMEOUT_MS)
     {
         fprintf(stderr, "[udp_session_timeout] closing inactive session (elapsed=%llu ms)\n", (unsigned long long)elapsed);
-        
+
         // Stop receiving on the socket
         uv_udp_recv_stop(&session->sock);
-        
+
         // Close both handles with the same callback
         if (!uv_is_closing((uv_handle_t *)&session->timeout_timer))
             uv_close((uv_handle_t *)&session->timeout_timer, udp_session_close_cb);
-        
+
         if (!uv_is_closing((uv_handle_t *)&session->sock))
             uv_close((uv_handle_t *)&session->sock, udp_session_close_cb);
     }
@@ -697,7 +739,6 @@ static void tcp_conn_close_cb(uv_handle_t *handle)
     }
 }
 
-
 static void udp_session_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
                                 const struct sockaddr *addr, unsigned flags)
 {
@@ -706,7 +747,7 @@ static void udp_session_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t 
     {
         // Update activity timestamp
         session->last_activity = uv_now(handle->loop);
-        
+
         // forward to original client via the server socket
         fwd_udp_send_req_t *fw = (fwd_udp_send_req_t *)DATA_ALLOC(session->fwd, sizeof(fwd_udp_send_req_t));
         if (!fw)
@@ -751,15 +792,15 @@ static udp_client_session_t *udp_session_create(udp_forwarder_t_impl *fwd, const
     memcpy(&s->client_addr, client_addr, addr_len);
     uv_udp_init(fwd->loop, &s->sock);
     s->sock.data = s;
-    
+
     // Initialize timeout timer
     uv_timer_init(fwd->loop, &s->timeout_timer);
     s->timeout_timer.data = s;
     s->last_activity = uv_now(fwd->loop);
-    
+
     // Start timeout timer
     uv_timer_start(&s->timeout_timer, udp_session_timeout_cb, UDP_SESSION_TIMEOUT_MS, 0);
-    
+
     // bind ephemeral port (0)
     if (fwd->family == ADDR_FAMILY_IPV6)
     {
@@ -777,13 +818,20 @@ static udp_client_session_t *udp_session_create(udp_forwarder_t_impl *fwd, const
     // prepend to session list
     s->next = fwd->sessions;
     fwd->sessions = s;
+
+    // Add to hash table for fast lookup
+    uint32_t hash = sockaddr_hash((const struct sockaddr *)&s->client_addr);
+    s->next = fwd->session_hash[hash];
+    fwd->session_hash[hash] = s;
+
     return s;
 }
 
-// find session by client addr
+// find session by client addr (O(1) hash lookup)
 static udp_client_session_t *udp_find_session(udp_forwarder_t_impl *fwd, const struct sockaddr *client_addr)
 {
-    udp_client_session_t *it = fwd->sessions;
+    uint32_t hash = sockaddr_hash(client_addr);
+    udp_client_session_t *it = fwd->session_hash[hash];
     while (it)
     {
         if (sockaddr_equal((const struct sockaddr *)&it->client_addr, client_addr))
@@ -868,6 +916,7 @@ udp_forwarder_t *udp_forwarder_create(
     fwd->family = family;
     fwd->running = 0;
     fwd->sessions = NULL;
+    memset(fwd->session_hash, 0, sizeof(fwd->session_hash));
     // cache target addr
     if (family == ADDR_FAMILY_IPV6)
     {

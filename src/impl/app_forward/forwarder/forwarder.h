@@ -26,6 +26,8 @@ typedef struct udp_client_session udp_client_session_t;
 // Expose an implementation alias used by the C file
 typedef struct udp_forwarder udp_forwarder_t_impl;
 
+#define UDP_SESSION_HASH_SIZE 256
+
 // Full UDP forwarder definition (kept here so C code can access members)
 struct udp_forwarder {
 	uv_loop_t *loop;
@@ -35,6 +37,7 @@ struct udp_forwarder {
 	addr_family_t family;
 	int running;
 	udp_client_session_t *sessions;
+	udp_client_session_t *session_hash[UDP_SESSION_HASH_SIZE];
 	struct sockaddr_storage cached_dest_addr;
 };
 
