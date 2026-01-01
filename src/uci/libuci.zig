@@ -1,4 +1,5 @@
 const std = @import("std");
+const DynamicLibLoader = @import("../loader/dynamic_lib.zig").DynamicLibLoader;
 
 // 从 C 头文件导入类型定义 - 导出这些类型以便其他模块使用
 pub const c = @cImport({
@@ -69,7 +70,7 @@ const uci_hash_options_fn = *const fn (tb: [*c][*c]c.uci_option, n_opts: c_int) 
 // const uci_parse_section_fn = *const @TypeOf(@field(c, "uci_parse_section"));
 // const uci_hash_options_fn = *const @TypeOf(@field(c, "uci_hash_options"));
 
-var lib_handle: ?std.DynLib = null;
+var lib_loader = DynamicLibLoader.init();
 var fn_alloc_context: ?uci_alloc_context_fn = null;
 var fn_free_context: ?uci_free_context_fn = null;
 var fn_perror: ?uci_perror_fn = null;
@@ -101,30 +102,10 @@ var fn_parse_ptr: ?uci_parse_ptr_fn = null;
 var fn_lookup_next: ?uci_lookup_next_fn = null;
 var fn_parse_section: ?uci_parse_section_fn = null;
 var fn_hash_options: ?uci_hash_options_fn = null;
+
 fn ensureLibLoaded() !void {
-    if (lib_handle != null) return;
-
-    const lib_paths = [_][]const u8{
-        "/lib/libuci.so.20250120",
-        "/lib/libuci.so",
-        "libuci.so",
-    };
-
-    var last_error: ?std.DynLib.Error = null;
-
-    for (lib_paths) |path| {
-        const lib = std.DynLib.open(path) catch |err| {
-            last_error = err;
-            continue;
-        };
-        lib_handle = lib;
-        return;
-    }
-
-    if (last_error) |err| {
-        return err;
-    }
-    return error.LibLoadFailed;
+    if (lib_loader.isLoaded()) return;
+    try lib_loader.load("libuci");
 }
 
 fn loadFunction(comptime T: type, comptime name: [:0]const u8, cache: *?T) !T {
@@ -134,11 +115,7 @@ fn loadFunction(comptime T: type, comptime name: [:0]const u8, cache: *?T) !T {
 
     try ensureLibLoaded();
 
-    const func = lib_handle.?.lookup(T, name) orelse {
-        std.debug.print("Failed to lookup {s}\n", .{name});
-        return error.FunctionNotFound;
-    };
-
+    const func = try lib_loader.lookup(T, name);
     cache.* = func;
     return func;
 }
@@ -299,5 +276,5 @@ pub inline fn uci_hash_options(tb: [*c][*c]c.uci_option, n_opts: c_int) !u32 {
 }
 
 pub inline fn isLoaded() bool {
-    return lib_handle != null;
+    return lib_loader.isLoaded();
 }
