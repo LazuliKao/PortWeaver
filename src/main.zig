@@ -125,11 +125,15 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
                 });
             }
 
-            // 应用防火墙规则
-            std.debug.print("  Applying firewall rules...\n", .{});
-            firewall.applyFirewallRulesForProject(uci_ctx, allocator, project) catch |err| {
-                std.debug.print("Warning: Failed to apply firewall rules: {any}\n", .{err});
-            };
+            // 应用防火墙规则（统计模式下跳过）
+            if (project.enable_stats) {
+                std.debug.print("  Statistics enabled - skipping firewall forward rules (mutually exclusive)\n", .{});
+            } else {
+                std.debug.print("  Applying firewall rules...\n", .{});
+                firewall.applyFirewallRulesForProject(uci_ctx, allocator, project) catch |err| {
+                    std.debug.print("Warning: Failed to apply firewall rules: {any}\n", .{err});
+                };
+            }
 
             // 启动应用层端口转发（如果启用）
             if (project.enable_app_forward) {
@@ -139,6 +143,7 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
                 // 为每个项目创建独立线程
                 const thread = std.Thread.spawn(.{}, startForwardingThread, .{
                     allocator,
+                    i,
                     project,
                 }) catch |err| {
                     std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
@@ -182,6 +187,7 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
                 // 为每个项目创建独立线程
                 const thread = std.Thread.spawn(.{}, startForwardingThread, .{
                     allocator,
+                    i,
                     project,
                 }) catch |err| {
                     std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
@@ -199,8 +205,12 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
 }
 
 /// 在独立线程中启动转发
-fn startForwardingThread(allocator: std.mem.Allocator, project: config.Project) void {
-    app_forward.startForwarding(allocator, project) catch |err| {
+fn startForwardingThread(allocator: std.mem.Allocator, project_id: usize, project: config.Project) void {
+    std.debug.print("[FORWARDING_THREAD] Starting for project {d} ({s}), enable_app_forward={}, enable_stats={}\n", .{
+        project_id, project.remark, project.enable_app_forward, project.enable_stats
+    });
+    app_forward.startForwarding(allocator, project_id, project) catch |err| {
         std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ project.remark, err });
     };
+    std.debug.print("[FORWARDING_THREAD] Exited for project {d} ({s})\n", .{ project_id, project.remark });
 }

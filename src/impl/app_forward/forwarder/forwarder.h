@@ -20,6 +20,12 @@ typedef enum {
 typedef struct tcp_forwarder tcp_forwarder_t;
 typedef struct udp_forwarder udp_forwarder_t;
 
+// Traffic statistics structure
+typedef struct {
+    uint64_t bytes_in;
+    uint64_t bytes_out;
+} traffic_stats_t;
+
 // Internal forward declaration for UDP client session
 typedef struct udp_client_session udp_client_session_t;
 
@@ -39,6 +45,9 @@ struct udp_forwarder {
 	udp_client_session_t *sessions;
 	udp_client_session_t *session_hash[UDP_SESSION_HASH_SIZE];
 	struct sockaddr_storage cached_dest_addr;
+	int enable_stats;
+	unsigned long long bytes_in;
+	unsigned long long bytes_out;
 };
 
 // TCP Forwarder API
@@ -46,24 +55,28 @@ tcp_forwarder_t* tcp_forwarder_create(
     uint16_t listen_port,
     const char* target_address,
     uint16_t target_port,
-    addr_family_t family
+    addr_family_t family,
+    int enable_stats
 );
 
 int tcp_forwarder_start(tcp_forwarder_t* forwarder);
 void tcp_forwarder_stop(tcp_forwarder_t* forwarder);
 void tcp_forwarder_destroy(tcp_forwarder_t* forwarder);
+traffic_stats_t tcp_forwarder_get_stats(tcp_forwarder_t* forwarder);
 
 // UDP Forwarder API
 udp_forwarder_t* udp_forwarder_create(
     uint16_t listen_port,
     const char* target_address,
     uint16_t target_port,
-    addr_family_t family
+    addr_family_t family,
+    int enable_stats
 );
 
 int udp_forwarder_start(udp_forwarder_t* forwarder);
 void udp_forwarder_stop(udp_forwarder_t* forwarder);
 void udp_forwarder_destroy(udp_forwarder_t* forwarder);
+traffic_stats_t udp_forwarder_get_stats(udp_forwarder_t* forwarder);
 
 // Utility functions
 const char* uv_get_version_string(void);

@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("../config/types.zig");
+const app_forward = @import("../impl/app_forward.zig");
 const ubus = @import("libubus.zig");
 const ubox = @import("ubox.zig");
 const c = ubox.c;
@@ -51,6 +52,7 @@ const RuntimeState = struct {
                 .enabled = project.enabled,
                 .status = if (project.enabled) STATUS_RUNNING else STATUS_STOPPED,
                 .last_changed = now,
+                .active_ports = if (project.enabled and project.enable_app_forward) 1 else 0,
             };
         }
 
@@ -100,6 +102,17 @@ const RuntimeState = struct {
 };
 
 var g_state: ?*RuntimeState = null;
+
+/// Update runtime metrics for a project (thread-safe; best-effort)
+pub fn updateProjectMetrics(id: usize, active_ports: u32, bytes_in: u64, bytes_out: u64) void {
+    const state = g_state orelse return;
+    state.mutex.lock();
+    defer state.mutex.unlock();
+    if (id >= state.projects.len) return;
+    state.projects[id].active_ports = active_ports;
+    state.projects[id].bytes_in = bytes_in;
+    state.projects[id].bytes_out = bytes_out;
+}
 
 const set_enabled_policy = [_]c.blobmsg_policy{
     .{ .name = "id", .type = c.BLOBMSG_TYPE_INT32 },
@@ -263,9 +276,19 @@ fn handleListProjects(ctx: [*c]c.ubus_context, obj: [*c]c.ubus_object, req: [*c]
         addString(&buf, field_names.remark, p.remark) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
         addBool(&buf, field_names.enabled, p.enabled) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
         addString(&buf, field_names.status, p.status) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addU32(&buf, field_names.active_ports, p.active_ports) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addU64(&buf, field_names.bytes_in, p.bytes_in) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addU64(&buf, field_names.bytes_out, p.bytes_out) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        // on-demand stats: query forwarder handles if stats enabled
+        const active_ports: u32 = p.active_ports;
+        var bytes_in: u64 = p.bytes_in;
+        var bytes_out: u64 = p.bytes_out;
+        if (p.enabled and std.mem.eql(u8, p.status, STATUS_RUNNING)) {
+            const s = app_forward.getProjectStats(p.id);
+            bytes_in = s.bytes_in;
+            bytes_out = s.bytes_out;
+            // active_ports remains from runtime (currently single-port=1, both=2)
+        }
+        addU32(&buf, field_names.active_ports, active_ports) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addU64(&buf, field_names.bytes_in, bytes_in) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addU64(&buf, field_names.bytes_out, bytes_out) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
         addU64(&buf, field_names.last_changed, p.last_changed) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
 
         ubox.blobNestEnd(&buf, item) catch return c.UBUS_STATUS_UNKNOWN_ERROR;

@@ -232,6 +232,9 @@ struct tcp_forwarder
     addr_family_t family;
     int running;
     struct sockaddr_storage cached_dest_addr; // added: cache destination addr
+    int enable_stats;
+    unsigned long long bytes_in;
+    unsigned long long bytes_out;
 };
 
 /* Wrapper for write/send requests that carry a pointer back to the forwarder
@@ -280,6 +283,11 @@ static void tcp_on_client_read(uv_stream_t *client, ssize_t nread, const uv_buf_
     tcp_conn_ctx_t *ctx = (tcp_conn_ctx_t *)client->data;
     if (nread > 0)
     {
+        // Stats: count bytes received from client (bytes_in)
+        if (ctx->forwarder->enable_stats)
+        {
+            __atomic_fetch_add(&ctx->forwarder->bytes_in, (uint64_t)nread, __ATOMIC_RELAXED);
+        }
         fwd_write_req_t *fw = (fwd_write_req_t *)DATA_ALLOC(ctx->forwarder, sizeof(fwd_write_req_t));
         if (!fw)
         {
@@ -318,6 +326,11 @@ static void tcp_on_target_read(uv_stream_t *target, ssize_t nread, const uv_buf_
     tcp_conn_ctx_t *ctx = (tcp_conn_ctx_t *)target->data;
     if (nread > 0)
     {
+        // Stats: count bytes received from target (bytes_out)
+        if (ctx->forwarder->enable_stats)
+        {
+            __atomic_fetch_add(&ctx->forwarder->bytes_out, (uint64_t)nread, __ATOMIC_RELAXED);
+        }
         fwd_write_req_t *fw = (fwd_write_req_t *)DATA_ALLOC(ctx->forwarder, sizeof(fwd_write_req_t));
         if (!fw)
         {
@@ -464,7 +477,8 @@ tcp_forwarder_t *tcp_forwarder_create(
     uint16_t listen_port,
     const char *target_address,
     uint16_t target_port,
-    addr_family_t family)
+    addr_family_t family,
+    int enable_stats)
 {
     // Allocate forwarder directly (no external allocator support)
     struct tcp_forwarder *fwd = NULL;
@@ -479,6 +493,10 @@ tcp_forwarder_t *tcp_forwarder_create(
     fwd->target_address = strdup(target_address);
     fwd->target_port = target_port;
     fwd->family = family;
+    fwd->enable_stats = enable_stats;
+    // Initialize atomic counters
+    __atomic_store_n(&fwd->bytes_in, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&fwd->bytes_out, 0, __ATOMIC_RELAXED);
     // cache parsed destination sockaddr to avoid repeated parsing
     if (family == ADDR_FAMILY_IPV6)
     {
@@ -549,6 +567,17 @@ void tcp_forwarder_destroy(tcp_forwarder_t *forwarder)
     if (forwarder->target_address)
         free(forwarder->target_address);
     free(forwarder);
+}
+
+traffic_stats_t tcp_forwarder_get_stats(tcp_forwarder_t *forwarder)
+{
+    traffic_stats_t stats = {0, 0};
+    if (forwarder && forwarder->enable_stats)
+    {
+        stats.bytes_in = __atomic_load_n(&forwarder->bytes_in, __ATOMIC_RELAXED);
+        stats.bytes_out = __atomic_load_n(&forwarder->bytes_out, __ATOMIC_RELAXED);
+    }
+    return stats;
 }
 
 // --- UDP Forwarder Implementation ---
@@ -744,6 +773,11 @@ static void udp_session_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t 
     udp_client_session_t *session = (udp_client_session_t *)handle->data;
     if (nread > 0)
     {
+        // Stats: count bytes received from target (bytes_out)
+        if (session->fwd->enable_stats)
+        {
+            __atomic_fetch_add(&session->fwd->bytes_out, (uint64_t)nread, __ATOMIC_RELAXED);
+        }
         // Update activity timestamp
         session->last_activity = uv_now(handle->loop);
 
@@ -840,6 +874,11 @@ static void udp_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
     udp_forwarder_t_impl *fwd = (udp_forwarder_t_impl *)handle->data;
     if (nread > 0 && addr)
     {
+        // Stats: count bytes received from client (bytes_in)
+        if (fwd->enable_stats)
+        {
+            __atomic_fetch_add(&fwd->bytes_in, (uint64_t)nread, __ATOMIC_RELAXED);
+        }
         // create/find session for this client and send to cached target using per-client socket
         udp_client_session_t *session = udp_find_session(fwd, addr);
         if (!session)
@@ -886,7 +925,8 @@ udp_forwarder_t *udp_forwarder_create(
     uint16_t listen_port,
     const char *target_address,
     uint16_t target_port,
-    addr_family_t family)
+    addr_family_t family,
+    int enable_stats)
 {
     udp_forwarder_t_impl *fwd = NULL;
 
@@ -903,6 +943,10 @@ udp_forwarder_t *udp_forwarder_create(
     fwd->family = family;
     fwd->running = 0;
     fwd->sessions = NULL;
+    fwd->enable_stats = enable_stats;
+    // Initialize atomic counters
+    __atomic_store_n(&fwd->bytes_in, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&fwd->bytes_out, 0, __ATOMIC_RELAXED);
     memset(fwd->session_hash, 0, sizeof(fwd->session_hash));
     // cache target addr
     if (family == ADDR_FAMILY_IPV6)
@@ -974,6 +1018,18 @@ void udp_forwarder_destroy(udp_forwarder_t *forwarder)
 
     // cleanup any tracked allocations
     free(fwd);
+}
+
+traffic_stats_t udp_forwarder_get_stats(udp_forwarder_t *forwarder)
+{
+    traffic_stats_t stats = {0, 0};
+    udp_forwarder_t_impl *fwd = (udp_forwarder_t_impl *)forwarder;
+    if (fwd && fwd->enable_stats)
+    {
+        stats.bytes_in = __atomic_load_n(&fwd->bytes_in, __ATOMIC_RELAXED);
+        stats.bytes_out = __atomic_load_n(&fwd->bytes_out, __ATOMIC_RELAXED);
+    }
+    return stats;
 }
 
 // --- Utility ---

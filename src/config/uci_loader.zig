@@ -161,6 +161,8 @@ fn parseProjectFromSection(allocator: std.mem.Allocator, sec: uci.UciSection) !t
             project.add_firewall_forward = try types.parseBool(opt_val);
         } else if (std.mem.eql(u8, opt_name, "enable_app_forward") or std.mem.eql(u8, opt_name, "app_forward") or std.mem.eql(u8, opt_name, "启用应用层转发")) {
             project.enable_app_forward = try types.parseBool(opt_val);
+        } else if (std.mem.eql(u8, opt_name, "enable_stats") or std.mem.eql(u8, opt_name, "stats") or std.mem.eql(u8, opt_name, "启用统计")) {
+            project.enable_stats = try types.parseBool(opt_val);
         }
     }
 

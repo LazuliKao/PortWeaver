@@ -12,6 +12,7 @@ pub const UdpForwarder = struct {
     target_address: []const u8,
     target_port: u16,
     family: common.AddressFamily,
+    enable_stats: bool,
 
     forwarder: ?*c.udp_forwarder_t = null,
 
@@ -21,6 +22,7 @@ pub const UdpForwarder = struct {
         target_address: []const u8,
         target_port: u16,
         family: common.AddressFamily,
+        enable_stats: bool,
     ) UdpForwarder {
         return .{
             .allocator = allocator,
@@ -28,6 +30,7 @@ pub const UdpForwarder = struct {
             .target_address = target_address,
             .target_port = target_port,
             .family = family,
+            .enable_stats = enable_stats,
         };
     }
 
@@ -48,7 +51,13 @@ pub const UdpForwarder = struct {
             .any => c.ADDR_FAMILY_ANY,
         };
 
-        const forwarder = c.udp_forwarder_create(self.listen_port, target_host_z.ptr, self.target_port, addr_family);
+        const forwarder = c.udp_forwarder_create(
+            self.listen_port,
+            target_host_z.ptr,
+            self.target_port,
+            addr_family,
+            if (self.enable_stats) 1 else 0,
+        );
         if (forwarder == null) return ForwardError.ListenFailed;
         self.forwarder = forwarder;
 
@@ -67,4 +76,24 @@ pub const UdpForwarder = struct {
             c.udp_forwarder_stop(f);
         }
     }
+
+    pub fn getHandle(self: *UdpForwarder) ?*c.udp_forwarder_t {
+        return self.forwarder;
+    }
+
+    pub fn getStats(self: *UdpForwarder) common.TrafficStats {
+        if (self.forwarder) |f| {
+            const c_stats = c.udp_forwarder_get_stats(f);
+            return .{
+                .bytes_in = c_stats.bytes_in,
+                .bytes_out = c_stats.bytes_out,
+            };
+        }
+        return .{ .bytes_in = 0, .bytes_out = 0 };
+    }
 };
+
+pub fn getStatsRaw(fwd: *c.udp_forwarder_t) common.TrafficStats {
+    const c_stats = c.udp_forwarder_get_stats(fwd);
+    return .{ .bytes_in = c_stats.bytes_in, .bytes_out = c_stats.bytes_out };
+}

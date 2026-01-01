@@ -67,6 +67,9 @@ pub const Project = struct {
     enable_app_forward: bool = false,
     /// reuseaddr 绑定到本地端口
     reuseaddr: bool = true,
+    /// 启用流量统计（仅当 enable_app_forward=true 时有效）
+    /// 注意：启用统计后无法使用防火墙转发（add_firewall_forward 会被强制禁用）
+    enable_stats: bool = false,
 
     pub fn deinit(self: *Project, allocator: std.mem.Allocator) void {
         if (self.remark.len != 0) allocator.free(self.remark);

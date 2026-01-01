@@ -16,7 +16,8 @@ pub const TcpForwarder = struct {
         target_address: []const u8,
         target_port: u16,
         family: common.AddressFamily,
-    ) TcpForwarder {
+        enable_stats: bool,
+    ) !TcpForwarder {
         var self: TcpForwarder = undefined;
         self.allocator = allocator;
 
@@ -29,12 +30,20 @@ pub const TcpForwarder = struct {
             .any => c.ADDR_FAMILY_ANY,
         };
 
-        self.forwarder = c.tcp_forwarder_create(
+        const forwarder_ptr = c.tcp_forwarder_create(
             listen_port,
             target_z.ptr,
             target_port,
             c_family,
-        ) orelse unreachable;
+            if (enable_stats) 1 else 0,
+        );
+        
+        if (forwarder_ptr == null) {
+            std.debug.print("[TCP] ERROR: Failed to create TCP forwarder on port {d}\n", .{listen_port});
+            return ForwardError.ListenFailed;
+        }
+        
+        self.forwarder = forwarder_ptr.?;
 
         return self;
     }
@@ -52,4 +61,21 @@ pub const TcpForwarder = struct {
     pub fn deinit(self: *TcpForwarder) void {
         c.tcp_forwarder_destroy(self.forwarder);
     }
+
+    pub fn getHandle(self: *TcpForwarder) *c.tcp_forwarder_t {
+        return self.forwarder;
+    }
+
+    pub fn getStats(self: *TcpForwarder) common.TrafficStats {
+        const c_stats = c.tcp_forwarder_get_stats(self.forwarder);
+        return .{
+            .bytes_in = c_stats.bytes_in,
+            .bytes_out = c_stats.bytes_out,
+        };
+    }
 };
+
+pub fn getStatsRaw(fwd: *c.tcp_forwarder_t) common.TrafficStats {
+    const c_stats = c.tcp_forwarder_get_stats(fwd);
+    return .{ .bytes_in = c_stats.bytes_in, .bytes_out = c_stats.bytes_out };
+}
