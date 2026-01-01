@@ -570,10 +570,13 @@ typedef struct udp_client_session
     int close_count;          // count of closed handles (timer + sock = 2)
 } udp_client_session_t;
 
-// Session timeout in milliseconds (5 minutes of inactivity)
-// #define UDP_SESSION_TIMEOUT_MS 300000
+#ifdef DEBUG
 // 5s
 #define UDP_SESSION_TIMEOUT_MS 5000
+#else
+// Session timeout in milliseconds (5 minutes of inactivity)
+#define UDP_SESSION_TIMEOUT_MS 300000
+#endif // DEBUG
 
 static void udp_session_close_cb(uv_handle_t *handle);
 static void udp_session_timeout_cb(uv_timer_t *timer);
@@ -756,16 +759,9 @@ static void udp_session_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t 
             return;
         }
         fw->fwd = session->fwd;
-        char *data = (char *)DATA_ALLOC(session->fwd, nread);
-        if (!data)
-        {
-            DATA_FREE(session->fwd, fw);
-            DATA_FREE(session->fwd, buf->base);
-            return;
-        }
-        memcpy(data, buf->base, nread);
-        uv_buf_t wbuf = uv_buf_init(data, nread);
-        fw->req.data = data;
+        // Zero-copy optimization: pass ownership of buf->base to send request
+        uv_buf_t wbuf = uv_buf_init(buf->base, nread);
+        fw->req.data = buf->base;
         int r = uv_udp_send(&fw->req, &session->fwd->server, &wbuf, 1, (const struct sockaddr *)&session->client_addr, udp_on_send);
         if (r != 0)
         {
@@ -774,6 +770,7 @@ static void udp_session_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t 
                 DATA_FREE(fw->fwd, fw->req.data);
             DATA_FREE(fw->fwd, fw);
         }
+        return; // buf->base will be freed in udp_on_send callback
     }
     if (buf->base)
         DATA_FREE(session->fwd, buf->base);
@@ -871,16 +868,9 @@ static void udp_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
             return;
         }
         fw->fwd = (struct udp_forwarder *)fwd;
-        char *data = (char *)DATA_ALLOC((struct udp_forwarder *)fwd, nread);
-        if (!data)
-        {
-            DATA_FREE((struct udp_forwarder *)fwd, fw);
-            DATA_FREE((struct udp_forwarder *)fwd, buf->base);
-            return;
-        }
-        memcpy(data, buf->base, nread);
-        uv_buf_t wbuf = uv_buf_init(data, nread);
-        fw->req.data = data;
+        // Zero-copy optimization: pass ownership of buf->base to send request
+        uv_buf_t wbuf = uv_buf_init(buf->base, nread);
+        fw->req.data = buf->base;
         // send from session socket to cached target addr
         int r = uv_udp_send(&fw->req, &session->sock, &wbuf, 1, (const struct sockaddr *)&fwd->cached_dest_addr, udp_on_send);
         if (r != 0)
@@ -890,6 +880,7 @@ static void udp_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
                 DATA_FREE(fw->fwd, fw->req.data);
             DATA_FREE(fw->fwd, fw);
         }
+        return; // buf->base will be freed in udp_on_send callback
     }
     if (buf->base)
         DATA_FREE((struct udp_forwarder *)fwd, buf->base);
