@@ -9,15 +9,22 @@ const STATUS_RUNNING: [:0]const u8 = "running";
 const STATUS_STOPPED: [:0]const u8 = "stopped";
 const STATUS_DEGRADED: [:0]const u8 = "degraded";
 
-const ProjectState = struct {
-    id: usize,
-    remark: [:0]u8,
-    enabled: bool,
-    status: [:0]const u8,
-    active_ports: u32 = 0,
-    bytes_in: u64 = 0,
-    bytes_out: u64 = 0,
-    last_changed: u64,
+/// 项目启动状态
+pub const StartupStatus = enum(u8) {
+    /// 项目未启用（正常）
+    disabled = 0,
+    /// 启动成功，正在运行
+    success = 1,
+    /// 启动失败，有错误信息
+    failed = 2,
+
+    pub fn toString(self: StartupStatus) [:0]const u8 {
+        return switch (self) {
+            .disabled => "disabled",
+            .success => "success",
+            .failed => "failed",
+        };
+    }
 };
 
 const GlobalSnapshot = struct {
@@ -32,7 +39,10 @@ const GlobalSnapshot = struct {
 const RuntimeState = struct {
     allocator: std.mem.Allocator,
     start_ts: u64,
-    projects: []ProjectState,
+    projects: []const types.Project,
+    remarks: [][:0]const u8,
+    enabled: []bool,
+    last_changed: []u64,
     mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, projects: []const types.Project) !*RuntimeState {
@@ -41,27 +51,29 @@ const RuntimeState = struct {
         state.* = .{
             .allocator = allocator,
             .start_ts = now,
-            .projects = try allocator.alloc(ProjectState, projects.len),
+            .projects = projects,
+            .remarks = try allocator.alloc([:0]const u8, projects.len),
+            .enabled = try allocator.alloc(bool, projects.len),
+            .last_changed = try allocator.alloc(u64, projects.len),
         };
 
         for (projects, 0..) |project, idx| {
             const remark_z = try allocator.dupeZ(u8, project.remark);
-            state.projects[idx] = .{
-                .id = idx,
-                .remark = remark_z,
-                .enabled = project.enabled,
-                .status = if (project.enabled) STATUS_RUNNING else STATUS_STOPPED,
-                .last_changed = now,
-                .active_ports = if (project.enabled and project.enable_app_forward) 1 else 0,
-            };
+            state.remarks[idx] = remark_z;
+            state.enabled[idx] = project.enabled;
+            state.last_changed[idx] = now;
         }
 
         return state;
     }
 
     pub fn deinit(self: *RuntimeState) void {
-        for (self.projects) |p| self.allocator.free(p.remark);
-        self.allocator.free(self.projects);
+        for (self.remarks) |r| {
+            self.allocator.free(r);
+        }
+        self.allocator.free(self.remarks);
+        self.allocator.free(self.enabled);
+        self.allocator.free(self.last_changed);
         self.allocator.destroy(self);
     }
 
@@ -69,30 +81,31 @@ const RuntimeState = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        var running: usize = 0;
+        var enabled_projects: u32 = 0;
+        var success_projects: u32 = 0;
         var active_ports: u32 = 0;
         var bytes_in: u64 = 0;
         var bytes_out: u64 = 0;
-        for (self.projects) |p| {
-            if (p.enabled) running += 1;
-            active_ports += p.active_ports;
-            // on-demand stats: query forwarder handles for real-time traffic data
-            if (p.enabled and std.mem.eql(u8, p.status, STATUS_RUNNING)) {
-                const s = app_forward.getProjectStats(p.id);
-                bytes_in += s.bytes_in;
-                bytes_out += s.bytes_out;
-            } else {
-                bytes_in += p.bytes_in;
-                bytes_out += p.bytes_out;
+
+        var i: usize = 0;
+        while (i < self.projects.len) : (i += 1) {
+            const info = app_forward.getProjectRuntimeInfo(i);
+            if (self.enabled[i]) {
+                enabled_projects += 1;
+                if (info.startup_status == StartupStatus.success) {
+                    success_projects += 1;
+                }
             }
+            active_ports += info.active_ports;
+            bytes_in += info.bytes_in;
+            bytes_out += info.bytes_out;
         }
 
-        const status: [:0]const u8 = if (self.projects.len == 0)
+        // 判断整体状态：当启用的项目数为0时是STOPPED，当启用项目全部启动成功时是RUNNING，否则是DEGRADED
+        const status: [:0]const u8 = if (enabled_projects == 0)
             STATUS_STOPPED
-        else if (running == self.projects.len)
+        else if (success_projects == enabled_projects)
             STATUS_RUNNING
-        else if (running == 0)
-            STATUS_STOPPED
         else
             STATUS_DEGRADED;
 
@@ -109,17 +122,6 @@ const RuntimeState = struct {
 };
 
 var g_state: ?*RuntimeState = null;
-
-/// Update runtime metrics for a project (thread-safe; best-effort)
-pub fn updateProjectMetrics(id: usize, active_ports: u32, bytes_in: u64, bytes_out: u64) void {
-    const state = g_state orelse return;
-    state.mutex.lock();
-    defer state.mutex.unlock();
-    if (id >= state.projects.len) return;
-    state.projects[id].active_ports = active_ports;
-    state.projects[id].bytes_in = bytes_in;
-    state.projects[id].bytes_out = bytes_out;
-}
 
 const set_enabled_policy = [_]c.blobmsg_policy{
     .{ .name = "id", .type = c.BLOBMSG_TYPE_INT32 },
@@ -147,6 +149,8 @@ const field_names = struct {
     pub const bytes_in: [:0]const u8 = "bytes_in";
     pub const bytes_out: [:0]const u8 = "bytes_out";
     pub const last_changed: [:0]const u8 = "last_changed";
+    pub const startup_status: [:0]const u8 = "startup_status";
+    pub const error_code: [:0]const u8 = "error_code";
 };
 
 pub fn start(allocator: std.mem.Allocator, projects: []const types.Project) !void {
@@ -275,28 +279,28 @@ fn handleListProjects(ctx: [*c]c.ubus_context, obj: [*c]c.ubus_object, req: [*c]
     state.mutex.lock();
     defer state.mutex.unlock();
 
-    for (state.projects) |p| {
+    var i: usize = 0;
+    while (i < state.projects.len) : (i += 1) {
         const item = ubox.blobmsgOpenNested(&buf, null, false) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
         if (item == null) return c.UBUS_STATUS_UNKNOWN_ERROR;
 
-        addU32(&buf, field_names.id, @intCast(p.id)) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addString(&buf, field_names.remark, p.remark) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addBool(&buf, field_names.enabled, p.enabled) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addString(&buf, field_names.status, p.status) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        // on-demand stats: query forwarder handles if stats enabled
-        const active_ports: u32 = p.active_ports;
-        var bytes_in: u64 = p.bytes_in;
-        var bytes_out: u64 = p.bytes_out;
-        if (p.enabled and std.mem.eql(u8, p.status, STATUS_RUNNING)) {
-            const s = app_forward.getProjectStats(p.id);
-            bytes_in = s.bytes_in;
-            bytes_out = s.bytes_out;
-            // active_ports remains from runtime (currently single-port=1, both=2)
+        const info = app_forward.getProjectRuntimeInfo(i);
+
+        addU32(&buf, field_names.id, @intCast(i)) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addString(&buf, field_names.remark, state.remarks[i]) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addBool(&buf, field_names.enabled, state.enabled[i]) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addString(&buf, field_names.status, if (state.enabled[i]) STATUS_RUNNING else STATUS_STOPPED) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addString(&buf, field_names.startup_status, info.startup_status.toString()) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+
+        addU32(&buf, field_names.active_ports, info.active_ports) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addU64(&buf, field_names.bytes_in, info.bytes_in) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addU64(&buf, field_names.bytes_out, info.bytes_out) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+        addU64(&buf, field_names.last_changed, state.last_changed[i]) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
+
+        // 如果启动失败，返回错误代码
+        if (info.startup_status == .failed and info.error_code != 0) {
+            addI32(&buf, field_names.error_code, info.error_code) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
         }
-        addU32(&buf, field_names.active_ports, active_ports) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addU64(&buf, field_names.bytes_in, bytes_in) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addU64(&buf, field_names.bytes_out, bytes_out) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
-        addU64(&buf, field_names.last_changed, p.last_changed) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
 
         ubox.blobNestEnd(&buf, item) catch return c.UBUS_STATUS_UNKNOWN_ERROR;
     }
@@ -331,10 +335,8 @@ fn handleSetEnabled(ctx: [*c]c.ubus_context, obj: [*c]c.ubus_object, req: [*c]c.
         return c.UBUS_STATUS_INVALID_ARGUMENT;
     }
 
-    var p = &state.projects[idx];
-    p.enabled = enabled_flag;
-    p.status = if (enabled_flag) STATUS_RUNNING else STATUS_STOPPED;
-    p.last_changed = currentTs();
+    state.enabled[idx] = enabled_flag;
+    state.last_changed[idx] = currentTs();
     state.mutex.unlock();
 
     var buf: c.blob_buf = std.mem.zeroes(c.blob_buf);
@@ -364,6 +366,12 @@ fn addBool(buf: *c.blob_buf, name: [:0]const u8, val: bool) !void {
 fn addU32(buf: *c.blob_buf, name: [:0]const u8, val: u32) !void {
     var be = std.mem.nativeToBig(u32, val);
     try ubox.blobmsgAddField(buf, c.BLOBMSG_TYPE_INT32, name, &be, @sizeOf(u32));
+}
+
+fn addI32(buf: *c.blob_buf, name: [:0]const u8, val: i32) !void {
+    const unsigned: u32 = @bitCast(val);
+    var be = std.mem.nativeToBig(u32, unsigned);
+    try ubox.blobmsgAddField(buf, c.BLOBMSG_TYPE_INT32, name, &be, @sizeOf(i32));
 }
 
 fn addU64(buf: *c.blob_buf, name: [:0]const u8, val: u64) !void {

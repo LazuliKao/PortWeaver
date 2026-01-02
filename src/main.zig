@@ -209,6 +209,11 @@ fn startForwardingThread(allocator: std.mem.Allocator, project_id: usize, projec
     std.debug.print("[FORWARDING_THREAD] Starting for project {d} ({s}), enable_app_forward={}, enable_stats={}\n", .{ project_id, project.remark, project.enable_app_forward, project.enable_stats });
     app_forward.startForwarding(allocator, project_id, project) catch |err| {
         std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ project.remark, err });
+        // if (builtin.mode == .Debug) {
+        //     if (@errorReturnTrace()) |trace| {
+        //         std.debug.dumpStackTrace(trace.*);
+        //     }
+        // }
     };
     std.debug.print("[FORWARDING_THREAD] Exited for project {d} ({s})\n", .{ project_id, project.remark });
 }

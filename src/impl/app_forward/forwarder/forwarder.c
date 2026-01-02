@@ -478,16 +478,25 @@ tcp_forwarder_t *tcp_forwarder_create(
     const char *target_address,
     uint16_t target_port,
     addr_family_t family,
-    int enable_stats)
+    int enable_stats,
+    int* out_error)
 {
     // Allocate forwarder directly (no external allocator support)
     struct tcp_forwarder *fwd = NULL;
     fwd = (struct tcp_forwarder *)malloc(sizeof(struct tcp_forwarder));
-    if (!fwd)
+    if (!fwd) {
+        if (out_error) *out_error = FORWARDER_ERROR_MALLOC;
         return NULL;
+    }
     memset(fwd, 0, sizeof(*fwd));
 
     fwd->loop = uv_loop_new();
+    if (!fwd->loop) {
+        if (out_error) *out_error = FORWARDER_ERROR_MALLOC;
+        free(fwd);
+        return NULL;
+    }
+
     uv_tcp_init(fwd->loop, &fwd->server);
     fwd->server.data = fwd;
     fwd->target_address = strdup(target_address);
@@ -523,7 +532,24 @@ tcp_forwarder_t *tcp_forwarder_create(
         uv_ip4_addr("0.0.0.0", listen_port, &addr4);
         memcpy(&addr, &addr4, sizeof(addr4));
     }
-    uv_tcp_bind(&fwd->server, (const struct sockaddr *)&addr, 0);
+    int bind_result = uv_tcp_bind(&fwd->server, (const struct sockaddr *)&addr, 0);
+    if (bind_result != 0) {
+        // Determine specific error
+        int error_code = FORWARDER_ERROR_BIND;
+        if (bind_result == UV_EADDRINUSE) {
+            error_code = FORWARDER_ERROR_ADDRESS_IN_USE;
+        } else if (bind_result == UV_EACCES) {
+            error_code = FORWARDER_ERROR_PERMISSION_DENIED;
+        }
+        if (out_error) *out_error = error_code;
+        uv_loop_close(fwd->loop);
+        free(fwd->loop);
+        free(fwd->target_address);
+        free(fwd);
+        return NULL;
+    }
+    
+    if (out_error) *out_error = FORWARDER_OK;
     return fwd;
 }
 
@@ -926,16 +952,25 @@ udp_forwarder_t *udp_forwarder_create(
     const char *target_address,
     uint16_t target_port,
     addr_family_t family,
-    int enable_stats)
+    int enable_stats,
+    int* out_error)
 {
     udp_forwarder_t_impl *fwd = NULL;
 
     fwd = (udp_forwarder_t_impl *)malloc(sizeof(udp_forwarder_t_impl));
-    if (!fwd)
+    if (!fwd) {
+        if (out_error) *out_error = FORWARDER_ERROR_MALLOC;
         return NULL;
+    }
     memset(fwd, 0, sizeof(*fwd));
 
     fwd->loop = uv_loop_new();
+    if (!fwd->loop) {
+        if (out_error) *out_error = FORWARDER_ERROR_MALLOC;
+        free(fwd);
+        return NULL;
+    }
+
     uv_udp_init(fwd->loop, &fwd->server);
     fwd->server.data = fwd;
     fwd->target_address = strdup(target_address);
@@ -974,7 +1009,23 @@ udp_forwarder_t *udp_forwarder_create(
         uv_ip4_addr("0.0.0.0", listen_port, &addr4);
         memcpy(&addr, &addr4, sizeof(addr4));
     }
-    uv_udp_bind(&fwd->server, (const struct sockaddr *)&addr, 0);
+    int bind_result = uv_udp_bind(&fwd->server, (const struct sockaddr *)&addr, 0);
+    if (bind_result != 0) {
+        int error_code = FORWARDER_ERROR_BIND;
+        if (bind_result == UV_EADDRINUSE) {
+            error_code = FORWARDER_ERROR_ADDRESS_IN_USE;
+        } else if (bind_result == UV_EACCES) {
+            error_code = FORWARDER_ERROR_PERMISSION_DENIED;
+        }
+        if (out_error) *out_error = error_code;
+        uv_loop_close(fwd->loop);
+        free(fwd->loop);
+        free(fwd->target_address);
+        free(fwd);
+        return NULL;
+    }
+    
+    if (out_error) *out_error = FORWARDER_OK;
     return (udp_forwarder_t *)fwd;
 }
 

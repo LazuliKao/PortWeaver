@@ -6,9 +6,15 @@ pub const ForwardError = common.ForwardError;
 
 const c = uv.c;
 
+pub const InitResult = struct {
+    forwarder: TcpForwarder,
+    error_code: i32,
+};
+
 pub const TcpForwarder = struct {
     allocator: std.mem.Allocator,
     forwarder: *c.tcp_forwarder_t,
+    last_error_code: i32 = 0,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -17,6 +23,7 @@ pub const TcpForwarder = struct {
         target_port: u16,
         family: common.AddressFamily,
         enable_stats: bool,
+        out_error_code: *i32,
     ) !TcpForwarder {
         var self: TcpForwarder = undefined;
         self.allocator = allocator;
@@ -30,26 +37,34 @@ pub const TcpForwarder = struct {
             .any => c.ADDR_FAMILY_ANY,
         };
 
+        var error_code: i32 = 0;
         const forwarder_ptr = c.tcp_forwarder_create(
             listen_port,
             target_z.ptr,
             target_port,
             c_family,
             if (enable_stats) 1 else 0,
+            &error_code,
         );
 
         if (forwarder_ptr == null) {
-            std.debug.print("[TCP] ERROR: Failed to create TCP forwarder on port {d}\n", .{listen_port});
+            std.debug.print("[TCP] ERROR on port {d}: error_code={d}\n", .{ listen_port, error_code });
+            out_error_code.* = error_code;
+            self.last_error_code = error_code;
             return ForwardError.ListenFailed;
         }
 
         self.forwarder = forwarder_ptr.?;
+        self.last_error_code = 0;
+        out_error_code.* = 0;
 
         return self;
     }
 
     pub fn start(self: *TcpForwarder) !void {
-        if (c.tcp_forwarder_start(self.forwarder) != 0) {
+        const r = c.tcp_forwarder_start(self.forwarder);
+        if (r != 0) {
+            self.last_error_code = r;
             return ForwardError.ListenFailed;
         }
     }
@@ -64,6 +79,10 @@ pub const TcpForwarder = struct {
 
     pub fn getHandle(self: *TcpForwarder) *c.tcp_forwarder_t {
         return self.forwarder;
+    }
+
+    pub fn getLastErrorCode(self: *TcpForwarder) i32 {
+        return self.last_error_code;
     }
 
     pub fn getStats(self: *TcpForwarder) common.TrafficStats {

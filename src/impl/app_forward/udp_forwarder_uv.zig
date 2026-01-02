@@ -13,6 +13,7 @@ pub const UdpForwarder = struct {
     target_port: u16,
     family: common.AddressFamily,
     enable_stats: bool,
+    last_error_code: i32 = 0,
 
     forwarder: ?*c.udp_forwarder_t = null,
 
@@ -51,15 +52,22 @@ pub const UdpForwarder = struct {
             .any => c.ADDR_FAMILY_ANY,
         };
 
+        var error_code: i32 = 0;
         const forwarder = c.udp_forwarder_create(
             self.listen_port,
             target_host_z.ptr,
             self.target_port,
             addr_family,
             if (self.enable_stats) 1 else 0,
+            &error_code,
         );
-        if (forwarder == null) return ForwardError.ListenFailed;
+        if (forwarder == null) {
+            std.debug.print("[UDP] ERROR on port {d}: error_code={d}\n", .{ self.listen_port, error_code });
+            self.last_error_code = error_code;
+            return ForwardError.ListenFailed;
+        }
         self.forwarder = forwarder;
+        self.last_error_code = 0;
 
         std.debug.print("[UDP] Listening on port {d}, forwarding to {s}:{d}\n", .{
             self.listen_port,
@@ -79,6 +87,10 @@ pub const UdpForwarder = struct {
 
     pub fn getHandle(self: *UdpForwarder) ?*c.udp_forwarder_t {
         return self.forwarder;
+    }
+
+    pub fn getLastErrorCode(self: *UdpForwarder) i32 {
+        return self.last_error_code;
     }
 
     pub fn getStats(self: *UdpForwarder) common.TrafficStats {
