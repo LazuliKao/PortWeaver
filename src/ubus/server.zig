@@ -9,24 +9,6 @@ const STATUS_RUNNING: [:0]const u8 = "running";
 const STATUS_STOPPED: [:0]const u8 = "stopped";
 const STATUS_DEGRADED: [:0]const u8 = "degraded";
 
-/// 项目启动状态
-pub const StartupStatus = enum(u8) {
-    /// 项目未启用（正常）
-    disabled = 0,
-    /// 启动成功，正在运行
-    success = 1,
-    /// 启动失败，有错误信息
-    failed = 2,
-
-    pub fn toString(self: StartupStatus) [:0]const u8 {
-        return switch (self) {
-            .disabled => "disabled",
-            .success => "success",
-            .failed => "failed",
-        };
-    }
-};
-
 const GlobalSnapshot = struct {
     status: [:0]const u8,
     total_projects: u32,
@@ -92,7 +74,7 @@ const RuntimeState = struct {
             const info = app_forward.getProjectRuntimeInfo(i);
             if (self.enabled[i]) {
                 enabled_projects += 1;
-                if (info.startup_status == StartupStatus.success) {
+                if (info.startup_status == .success) {
                     success_projects += 1;
                 }
             }

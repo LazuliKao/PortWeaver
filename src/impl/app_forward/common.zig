@@ -9,7 +9,7 @@ pub const ForwardError = error{
     InvalidAddress,
 };
 
-pub const THREAD_STACK_SIZE = 64 * 1024;
+pub const THREAD_STACK_SIZE = 4 * 1024;
 
 pub inline fn getThreadConfig() std.Thread.SpawnConfig {
     return .{ .stack_size = THREAD_STACK_SIZE };
@@ -41,4 +41,8 @@ pub fn parsePortRange(port_str: []const u8) !PortRange {
 
     const port = try types.parsePort(trimmed);
     return .{ .start = port, .end = port };
+}
+
+pub fn portToString(port: u16, allocator: std.mem.Allocator) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "{}", .{port});
 }

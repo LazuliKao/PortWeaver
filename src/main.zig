@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const config = @import("config/mod.zig");
 const app_forward = @import("impl/app_forward.zig");
+const project_status = @import("impl/project_status.zig");
 const builtin = @import("builtin");
 const ubus_server = if (build_options.ubus_mode) @import("ubus/server.zig") else void;
 // 仅在 UCI 模式下导入 UCI 相关模块
@@ -34,8 +35,10 @@ pub fn main() !void {
     @import("impl/app_forward/uv.zig").printVersion();
     std.debug.print("PortWeaver starting with {d} project(s)...\n", .{cfg.projects.len});
 
+    var handles: std.array_list.Managed(project_status.ProjectHandles) = .init(allocator);
     // 应用配置并启动服务
-    const has_app_forward = try applyConfig(allocator, cfg);
+    project_status.stopAll(&handles);
+    const has_app_forward = try applyConfig(allocator, &handles, cfg);
     if (build_options.ubus_mode) {
         ubus_server.start(allocator, cfg.projects) catch |err| {
             std.debug.print("Warning: Failed to start ubus server: {any}\n", .{err});
@@ -91,9 +94,33 @@ fn parseConfigFile(args: []const []const u8) ![]const u8 {
     std.debug.print("No config file specified, using default: config.json\n", .{});
     return "config.json";
 }
+fn setupProject(allocator: std.mem.Allocator, id: usize, handles: *std.array_list.Managed(project_status.ProjectHandles), project: config.Project) !void {
+    if (!project.enabled) {
+        std.debug.print("Project {d} ({s}) is disabled, skipping.\n", .{ id + 1, project.remark });
+        return;
+    }
+    var handle = project_status.ProjectHandles.init(id, project);
+    handles.append(handle) catch |err| {
+        std.debug.print("Error: Failed to append project handles: {any}\n", .{err});
+        return err;
+    };
+    // 启动应用层端口转发（如果启用）
+    if (project.enable_app_forward) {
+        std.debug.print("  Starting application layer forwarding...\n", .{});
 
+        // 为每个项目创建独立线程
+        const thread = std.Thread.spawn(.{}, startForwardingThread, .{
+            allocator,
+            &handle,
+        }) catch |err| {
+            std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
+            return;
+        };
+        thread.detach();
+    }
+}
 /// 应用配置：设置防火墙规则并启动应用层转发
-fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
+fn applyConfig(allocator: std.mem.Allocator, handles: *std.array_list.Managed(project_status.ProjectHandles), cfg: config.Config) !bool {
     var has_app_forward = false;
 
     // 初始化 UCI 上下文（如果需要配置防火墙）
@@ -107,11 +134,17 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
             std.debug.print("Warning: Failed to clear old firewall rules: {any}\n", .{err});
         };
         for (cfg.projects, 0..) |project, i| {
+            // 启动应用层端口转发
+            setupProject(allocator, i, handles, project) catch |err| {
+                std.debug.print("Error: Failed to setup project: {any}\n", .{err});
+            };
+
             if (!project.enabled) {
-                std.debug.print("Project {d} ({s}) is disabled, skipping.\n", .{ i + 1, project.remark });
                 continue;
             }
-
+            if (project.enable_app_forward) {
+                has_app_forward = true;
+            }
             std.debug.print("Applying project {d}: {s}\n", .{ i + 1, project.remark });
             if (project.port_mappings.len > 0) {
                 std.debug.print("  Mode: Port Mappings ({d} mapping(s))\n", .{project.port_mappings.len});
@@ -134,23 +167,6 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
                     std.debug.print("Warning: Failed to apply firewall rules: {any}\n", .{err});
                 };
             }
-
-            // 启动应用层端口转发（如果启用）
-            if (project.enable_app_forward) {
-                has_app_forward = true;
-                std.debug.print("  Starting application layer forwarding...\n", .{});
-
-                // 为每个项目创建独立线程
-                const thread = std.Thread.spawn(.{}, startForwardingThread, .{
-                    allocator,
-                    i,
-                    project,
-                }) catch |err| {
-                    std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
-                    continue;
-                };
-                thread.detach();
-            }
         }
 
         // 重新加载防火墙配置
@@ -161,40 +177,9 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
     } else {
         // JSON 模式：只启动应用层转发
         for (cfg.projects, 0..) |project, i| {
-            if (!project.enabled) {
-                std.debug.print("Project {d} ({s}) is disabled, skipping.\n", .{ i + 1, project.remark });
-                continue;
-            }
-
-            std.debug.print("Applying project {d}: {s}\n", .{ i + 1, project.remark });
-            if (project.port_mappings.len > 0) {
-                std.debug.print("  Mode: Port Mappings ({d} mapping(s))\n", .{project.port_mappings.len});
-                std.debug.print("  Target: {s}\n", .{project.target_address});
-            } else {
-                std.debug.print("  Mode: Single Port\n", .{});
-                std.debug.print("  Listen: :{d} -> Target: {s}:{d}\n", .{
-                    project.listen_port,
-                    project.target_address,
-                    project.target_port,
-                });
-            }
-
-            // 启动应用层端口转发（如果启用）
-            if (project.enable_app_forward) {
-                has_app_forward = true;
-                std.debug.print("  Starting application layer forwarding...\n", .{});
-
-                // 为每个项目创建独立线程
-                const thread = std.Thread.spawn(.{}, startForwardingThread, .{
-                    allocator,
-                    i,
-                    project,
-                }) catch |err| {
-                    std.debug.print("Error: Failed to spawn forwarding thread: {any}\n", .{err});
-                    continue;
-                };
-                thread.detach();
-            }
+            setupProject(allocator, i, handles, project) catch |err| {
+                std.debug.print("Error: Failed to setup project: {any}\n", .{err});
+            };
         }
     }
 
@@ -205,15 +190,14 @@ fn applyConfig(allocator: std.mem.Allocator, cfg: config.Config) !bool {
 }
 
 /// 在独立线程中启动转发
-fn startForwardingThread(allocator: std.mem.Allocator, project_id: usize, project: config.Project) void {
-    std.debug.print("[FORWARDING_THREAD] Starting for project {d} ({s}), enable_app_forward={}, enable_stats={}\n", .{ project_id, project.remark, project.enable_app_forward, project.enable_stats });
-    app_forward.startForwarding(allocator, project_id, project) catch |err| {
-        std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ project.remark, err });
+fn startForwardingThread(allocator: std.mem.Allocator, handle: *project_status.ProjectHandles) void {
+    std.debug.print("[FORWARDING_THREAD] Starting for project {d} ({s}), enable_app_forward={}, enable_stats={}\n", .{ handle.id, handle.cfg.remark, handle.cfg.enable_app_forward, handle.cfg.enable_stats });
+    app_forward.startForwarding(allocator, handle) catch |err| {
+        std.debug.print("Error: Failed to start forwarding for {s}: {any}\n", .{ handle.cfg.remark, err });
         // if (builtin.mode == .Debug) {
         //     if (@errorReturnTrace()) |trace| {
         //         std.debug.dumpStackTrace(trace.*);
         //     }
         // }
     };
-    std.debug.print("[FORWARDING_THREAD] Exited for project {d} ({s})\n", .{ project_id, project.remark });
 }

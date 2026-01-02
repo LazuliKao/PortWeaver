@@ -24,33 +24,24 @@ pub const UdpForwarder = struct {
         target_port: u16,
         family: common.AddressFamily,
         enable_stats: bool,
-    ) UdpForwarder {
-        return .{
-            .allocator = allocator,
-            .listen_port = listen_port,
-            .target_address = target_address,
-            .target_port = target_port,
-            .family = family,
-            .enable_stats = enable_stats,
-        };
-    }
-
-    pub fn deinit(self: *UdpForwarder) void {
-        if (self.forwarder) |f| {
-            c.udp_forwarder_destroy(f);
-            self.forwarder = null;
-        }
-    }
-
-    pub fn start(self: *UdpForwarder) !void {
-        const target_host_z = try self.allocator.dupeZ(u8, self.target_address);
-        defer self.allocator.free(target_host_z);
+        out_error_code: *i32,
+    ) !UdpForwarder {
+        var self: UdpForwarder = undefined;
+        self.allocator = allocator;
+        self.listen_port = listen_port;
+        self.target_address = target_address;
+        self.target_port = target_port;
+        self.family = family;
+        self.enable_stats = enable_stats;
 
         const addr_family: c.addr_family_t = switch (self.family) {
             .ipv4 => c.ADDR_FAMILY_IPV4,
             .ipv6 => c.ADDR_FAMILY_IPV6,
             .any => c.ADDR_FAMILY_ANY,
         };
+
+        const target_host_z = allocator.dupeZ(u8, self.target_address) catch unreachable;
+        defer allocator.free(target_host_z);
 
         var error_code: i32 = 0;
         const forwarder = c.udp_forwarder_create(
@@ -64,10 +55,28 @@ pub const UdpForwarder = struct {
         if (forwarder == null) {
             std.debug.print("[UDP] ERROR on port {d}: error_code={d}\n", .{ self.listen_port, error_code });
             self.last_error_code = error_code;
+            out_error_code.* = error_code;
             return ForwardError.ListenFailed;
         }
         self.forwarder = forwarder;
         self.last_error_code = 0;
+        out_error_code.* = 0;
+
+        return self;
+    }
+
+    pub fn deinit(self: *UdpForwarder) void {
+        if (self.forwarder) |f| {
+            c.udp_forwarder_destroy(f);
+            self.forwarder = null;
+        }
+    }
+
+    pub fn start(self: *UdpForwarder) !void {
+        if (self.forwarder == null) {
+            // Init should have created the forwarder already
+            return ForwardError.ListenFailed;
+        }
 
         std.debug.print("[UDP] Listening on port {d}, forwarding to {s}:{d}\n", .{
             self.listen_port,
@@ -75,8 +84,12 @@ pub const UdpForwarder = struct {
             self.target_port,
         });
 
-        const rc = c.udp_forwarder_start(forwarder.?);
-        if (rc != 0) return ForwardError.ListenFailed;
+        const rc = c.udp_forwarder_start(self.forwarder.?);
+        if (rc != 0) {
+            self.last_error_code = rc;
+            return ForwardError.ListenFailed;
+        }
+        self.last_error_code = 0;
     }
 
     pub fn stop(self: *UdpForwarder) void {
@@ -85,8 +98,8 @@ pub const UdpForwarder = struct {
         }
     }
 
-    pub fn getHandle(self: *UdpForwarder) ?*c.udp_forwarder_t {
-        return self.forwarder;
+    pub fn getHandle(self: *UdpForwarder) *c.udp_forwarder_t {
+        return self.forwarder.?;
     }
 
     pub fn getLastErrorCode(self: *UdpForwarder) i32 {

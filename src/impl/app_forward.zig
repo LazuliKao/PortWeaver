@@ -1,7 +1,7 @@
 const std = @import("std");
 const types = @import("../config/types.zig");
 const server = @import("../ubus/server.zig");
-
+const project_status = @import("project_status.zig");
 const common = @import("app_forward/common.zig");
 const tcp_uv = @import("app_forward/tcp_forwarder_uv.zig");
 const udp_uv = @import("app_forward/udp_forwarder_uv.zig");
@@ -16,218 +16,129 @@ pub inline fn getThreadConfig() std.Thread.SpawnConfig {
 pub const TcpForwarder = tcp_uv.TcpForwarder;
 pub const UdpForwarder = udp_uv.UdpForwarder;
 
-const ProjectHandles = struct {
-    tcp: ?*c.tcp_forwarder_t = null,
-    udp: ?*c.udp_forwarder_t = null,
-    startup_status: server.StartupStatus = .disabled,
-    error_code: i32 = 0,
-    active_ports: u32 = 0,
-};
-
-var g_handles: std.array_list.Aligned(ProjectHandles, null) = std.array_list.Aligned(ProjectHandles, null).empty;
-var g_handles_mutex: std.Thread.Mutex = .{};
-
-fn ensureHandles(allocator: std.mem.Allocator, project_id: usize) !void {
-    if (project_id + 1 > g_handles.items.len) {
-        // ensure the structure is initialized with a small initial capacity
-        if (g_handles.capacity == 0) {
-            g_handles = try std.array_list.Aligned(ProjectHandles, null).initCapacity(allocator, 4);
-        }
-        const need: usize = project_id + 1 - g_handles.items.len;
-        var i: usize = 0;
-        while (i < need) : (i += 1) {
-            try g_handles.append(allocator, .{});
-        }
-    }
-}
-
-fn setHandles(allocator: std.mem.Allocator, project_id: usize, tcp: ?*c.tcp_forwarder_t, udp: ?*c.udp_forwarder_t) !void {
-    g_handles_mutex.lock();
-    defer g_handles_mutex.unlock();
-    try ensureHandles(allocator, project_id);
-    g_handles.items[project_id].tcp = tcp;
-    g_handles.items[project_id].udp = udp;
-    var ap: u32 = 0;
-    if (tcp != null) ap += 1;
-    if (udp != null) ap += 1;
-    g_handles.items[project_id].active_ports = ap;
-    if (ap > 0) {
-        g_handles.items[project_id].startup_status = server.StartupStatus.success;
-        g_handles.items[project_id].error_code = 0;
-    }
-}
-
-fn setStartupFailed(allocator: std.mem.Allocator, project_id: usize, err_code: i32) void {
-    _ = ensureHandles(allocator, project_id) catch {};
-    g_handles_mutex.lock();
-    defer g_handles_mutex.unlock();
-    g_handles.items[project_id].startup_status = server.StartupStatus.failed;
-    g_handles.items[project_id].error_code = err_code;
-}
-
-fn setStartupSuccess(allocator: std.mem.Allocator, project_id: usize) void {
-    _ = ensureHandles(allocator, project_id) catch {};
-    g_handles_mutex.lock();
-    defer g_handles_mutex.unlock();
-    g_handles.items[project_id].startup_status = server.StartupStatus.success;
-    g_handles.items[project_id].error_code = 0;
-}
-
-pub fn getProjectStats(project_id: usize) common.TrafficStats {
-    g_handles_mutex.lock();
-    defer g_handles_mutex.unlock();
-    if (project_id >= g_handles.items.len) {
-        return .{ .bytes_in = 0, .bytes_out = 0 };
-    }
-    const h = g_handles.items[project_id];
-    var stats = common.TrafficStats{ .bytes_in = 0, .bytes_out = 0 };
-    if (h.tcp) |t| {
-        const s = tcp_uv.getStatsRaw(t);
-        stats.bytes_in += s.bytes_in;
-        stats.bytes_out += s.bytes_out;
-    }
-    if (h.udp) |u| {
-        const s = udp_uv.getStatsRaw(u);
-        stats.bytes_in += s.bytes_in;
-        stats.bytes_out += s.bytes_out;
-    }
-    return stats;
-}
-
-pub const ProjectRuntimeInfo = struct {
-    active_ports: u32,
-    bytes_in: u64,
-    bytes_out: u64,
-    startup_status: server.StartupStatus,
-    error_code: i32,
-};
-
-pub fn getProjectRuntimeInfo(project_id: usize) ProjectRuntimeInfo {
-    g_handles_mutex.lock();
-    defer g_handles_mutex.unlock();
-    if (project_id >= g_handles.items.len) {
-        return .{ .active_ports = 0, .bytes_in = 0, .bytes_out = 0, .startup_status = server.StartupStatus.disabled, .error_code = 0 };
-    }
-    const h = g_handles.items[project_id];
-    var bytes_in: u64 = 0;
-    var bytes_out: u64 = 0;
-    if (h.tcp) |t| {
-        const s = tcp_uv.getStatsRaw(t);
-        bytes_in += s.bytes_in;
-        bytes_out += s.bytes_out;
-    }
-    if (h.udp) |u| {
-        const s = udp_uv.getStatsRaw(u);
-        bytes_in += s.bytes_in;
-        bytes_out += s.bytes_out;
-    }
-    return .{
-        .active_ports = h.active_ports,
-        .bytes_in = bytes_in,
-        .bytes_out = bytes_out,
-        .startup_status = h.startup_status,
-        .error_code = h.error_code,
+// Helper: create and initialize a TCP forwarder. If fatal_on_fail is true, it will set startup status on failure.
+fn createTcpForwarder(
+    allocator: std.mem.Allocator,
+    projectHandle: *project_status.ProjectHandles,
+    listen_port: u16,
+    target_address: []const u8,
+    target_port: u16,
+    family: types.AddressFamily,
+    enable_stats: bool,
+) !*TcpForwarder {
+    var error_code: i32 = 0;
+    const fwd = try allocator.create(TcpForwarder);
+    fwd.* = TcpForwarder.init(allocator, listen_port, target_address, target_port, family, enable_stats, &error_code) catch |err| {
+        allocator.destroy(fwd);
+        projectHandle.setStartupFailed(error_code);
+        return err;
     };
+    return fwd;
 }
+
+fn createUdpForwarder(
+    allocator: std.mem.Allocator,
+    projectHandle: *project_status.ProjectHandles,
+    listen_port: u16,
+    target_address: []const u8,
+    target_port: u16,
+    family: types.AddressFamily,
+    enable_stats: bool,
+) !*UdpForwarder {
+    var error_code: i32 = 0;
+    const fwd = try allocator.create(UdpForwarder);
+    fwd.* = UdpForwarder.init(allocator, listen_port, target_address, target_port, family, enable_stats, &error_code) catch |err| {
+        allocator.destroy(fwd);
+        projectHandle.setStartupFailed(error_code);
+        return err;
+    };
+    return fwd;
+}
+
+fn startAndRegisterTcp(projectHandle: *project_status.ProjectHandles, fwd: *TcpForwarder) !void {
+    try projectHandle.registerTcpHandle(fwd);
+    const tcp_thread = try std.Thread.spawn(getThreadConfig(), startTcpForward, .{fwd});
+    tcp_thread.detach();
+}
+
+fn startAndRegisterUdp(projectHandle: *project_status.ProjectHandles, fwd: *UdpForwarder) !void {
+    try projectHandle.registerUdpHandle(fwd);
+    const udp_thread = try std.Thread.spawn(getThreadConfig(), startUdpForward, .{fwd});
+    udp_thread.detach();
+}
+
+// pub fn getProjectStats(project_id: usize) common.TrafficStats {
+//     g_handles_mutex.lock();
+//     defer g_handles_mutex.unlock();
+//     if (project_id >= g_handles.items.len) {
+//         return .{ .bytes_in = 0, .bytes_out = 0 };
+//     }
+//     const h = g_handles.items[project_id];
+//     var stats = common.TrafficStats{ .bytes_in = 0, .bytes_out = 0 };
+//     if (h.tcp_handles) |tcp_list| {
+//         for (tcp_list.items) |t| {
+//             const s = tcp_uv.getStatsRaw(t);
+//             stats.bytes_in += s.bytes_in;
+//             stats.bytes_out += s.bytes_out;
+//         }
+//     }
+//     if (h.udp_handles) |udp_list| {
+//         for (udp_list.items) |u| {
+//             const s = udp_uv.getStatsRaw(u);
+//             stats.bytes_in += s.bytes_in;
+//             stats.bytes_out += s.bytes_out;
+//         }
+//     }
+//     return stats;
+// }
+
+// pub fn getProjectRuntimeInfo(project_id: usize) project_status.ProjectRuntimeInfo {
+//     const h = g_handles.items[project_id];
+//     var bytes_in: u64 = 0;
+//     var bytes_out: u64 = 0;
+//     if (h.tcp_handles) |tcp_list| {
+//         for (tcp_list.items) |t| {
+//             const s = tcp_uv.getStatsRaw(t);
+//             bytes_in += s.bytes_in;
+//             bytes_out += s.bytes_out;
+//         }
+//     }
+//     if (h.udp_handles) |udp_list| {
+//         for (udp_list.items) |u| {
+//             const s = udp_uv.getStatsRaw(u);
+//             bytes_in += s.bytes_in;
+//             bytes_out += s.bytes_out;
+//         }
+//     }
+//     return .{
+//         .active_ports = h.active_ports,
+//         .bytes_in = bytes_in,
+//         .bytes_out = bytes_out,
+//         .startup_status = h.startup_status,
+//         .error_code = h.error_code,
+//     };
+// }
 
 /// Start a port forwarding project
-pub fn startForwarding(allocator: std.mem.Allocator, project_id: usize, project: types.Project) !void {
-    try ensureHandles(allocator, project_id);
-
-    if (!project.enable_app_forward) {
+pub fn startForwarding(allocator: std.mem.Allocator, projectHandle: *project_status.ProjectHandles) !void {
+    if (!projectHandle.cfg.enable_app_forward) {
         return;
     }
-
-    if (project.port_mappings.len > 0) {
-        for (project.port_mappings) |mapping| {
-            try startForwardingForMapping(allocator, project, mapping);
+    // Multi-port mode
+    if (projectHandle.cfg.port_mappings.len > 0) {
+        for (projectHandle.cfg.port_mappings) |mapping| {
+            try startForwardingForMapping(allocator, projectHandle, mapping);
         }
+        projectHandle.setStartupSuccess();
         return;
     }
     // Single-port mode
-    switch (project.protocol) {
-        .tcp => {
-            var error_code: i32 = 0;
-            var tcp_forwarder = TcpForwarder.init(
-                allocator,
-                project.listen_port,
-                project.target_address,
-                project.target_port,
-                project.family,
-                project.enable_stats,
-                &error_code,
-            ) catch {
-                setStartupFailed(allocator, project_id, error_code);
-                return;
-            };
-            try setHandles(allocator, project_id, tcp_forwarder.getHandle(), null);
-            tcp_forwarder.start() catch {
-                const start_error = tcp_forwarder.getLastErrorCode();
-                setStartupFailed(allocator, project_id, start_error);
-                return;
-            };
-            setStartupSuccess(allocator, project_id);
-        },
-
-        .udp => {
-            var udp_forwarder = UdpForwarder.init(
-                allocator,
-                project.listen_port,
-                project.target_address,
-                project.target_port,
-                project.family,
-                project.enable_stats,
-            );
-            udp_forwarder.start() catch {
-                const error_code = udp_forwarder.getLastErrorCode();
-                setStartupFailed(allocator, project_id, error_code);
-                return;
-            };
-            try setHandles(allocator, project_id, null, udp_forwarder.getHandle());
-            // active_ports handled in setHandles
-            setStartupSuccess(allocator, project_id);
-        },
-
-        .both => {
-            var error_code: i32 = 0;
-            var tcp_forwarder = TcpForwarder.init(
-                allocator,
-                project.listen_port,
-                project.target_address,
-                project.target_port,
-                project.family,
-                project.enable_stats,
-                &error_code,
-            ) catch {
-                setStartupFailed(allocator, project_id, error_code);
-                return;
-            };
-
-            var udp_forwarder = UdpForwarder.init(
-                allocator,
-                project.listen_port,
-                project.target_address,
-                project.target_port,
-                project.family,
-                project.enable_stats,
-            );
-
-            udp_forwarder.start() catch {
-                const udp_error = udp_forwarder.getLastErrorCode();
-                setStartupFailed(allocator, project_id, udp_error);
-                return;
-            };
-
-            try setHandles(allocator, project_id, tcp_forwarder.getHandle(), udp_forwarder.getHandle());
-            // active_ports handled in setHandles
-            tcp_forwarder.start() catch {
-                const tcp_start_error = tcp_forwarder.getLastErrorCode();
-                setStartupFailed(allocator, project_id, tcp_start_error);
-                return;
-            };
-            setStartupSuccess(allocator, project_id);
-        },
-    }
+    try startForwardingForMapping(allocator, projectHandle, .{ // convert to mapping
+        .protocol = projectHandle.cfg.protocol,
+        .listen_port = try common.portToString(projectHandle.cfg.listen_port, allocator),
+        .target_port = try common.portToString(projectHandle.cfg.target_port, allocator),
+    });
+    projectHandle.setStartupSuccess();
 }
 
 /// 解析端口范围字符串，返回起始和结束端口
@@ -238,7 +149,7 @@ fn parsePortRange(port_str: []const u8) !common.PortRange {
 /// 为单个端口映射启动转发
 fn startForwardingForMapping(
     allocator: std.mem.Allocator,
-    project: types.Project,
+    projectHandle: *project_status.ProjectHandles,
     mapping: types.PortMapping,
 ) !void {
     const listen_range = try parsePortRange(mapping.listen_port);
@@ -261,83 +172,48 @@ fn startForwardingForMapping(
 
         switch (mapping.protocol) {
             .tcp => {
-                const tcp_thread = try std.Thread.spawn(getThreadConfig(), startTcpForward, .{
-                    allocator,
-                    listen_port,
-                    project.target_address,
-                    target_port,
-                    project.family,
-                    project.enable_stats,
-                });
-                tcp_thread.detach();
+                const fwd = createTcpForwarder(allocator, projectHandle, listen_port, projectHandle.cfg.target_address, target_port, projectHandle.cfg.family, projectHandle.cfg.enable_stats) catch |err| {
+                    std.debug.print("[TCP] Failed to create forwarder on port {d}: {any}\n", .{ listen_port, err });
+                    continue;
+                };
+                // mapping: start inside thread and non-fatal
+                try startAndRegisterTcp(projectHandle, fwd);
             },
             .udp => {
-                const udp_thread = try std.Thread.spawn(getThreadConfig(), startUdpForward, .{
-                    allocator,
-                    listen_port,
-                    project.target_address,
-                    target_port,
-                    project.family,
-                    project.enable_stats,
-                });
-                udp_thread.detach();
+                const fwd = createUdpForwarder(allocator, projectHandle, listen_port, projectHandle.cfg.target_address, target_port, projectHandle.cfg.family, projectHandle.cfg.enable_stats) catch |err| {
+                    std.debug.print("[UDP] Failed to create forwarder on port {d}: {any}\n", .{ listen_port, err });
+                    continue;
+                };
+                try startAndRegisterUdp(projectHandle, fwd);
             },
             .both => {
-                const tcp_thread = try std.Thread.spawn(getThreadConfig(), startTcpForward, .{
-                    allocator,
-                    listen_port,
-                    project.target_address,
-                    target_port,
-                    project.family,
-                    project.enable_stats,
-                });
-                tcp_thread.detach();
-
-                const udp_thread = try std.Thread.spawn(getThreadConfig(), startUdpForward, .{
-                    allocator,
-                    listen_port,
-                    project.target_address,
-                    target_port,
-                    project.family,
-                    project.enable_stats,
-                });
-                udp_thread.detach();
+                const tcp_fwd = createTcpForwarder(allocator, projectHandle, listen_port, projectHandle.cfg.target_address, target_port, projectHandle.cfg.family, projectHandle.cfg.enable_stats) catch |err| {
+                    std.debug.print("[TCP] Failed to create forwarder on port {d}: {any}\n", .{ listen_port, err });
+                    continue;
+                };
+                const udp_fwd = createUdpForwarder(allocator, projectHandle, listen_port, projectHandle.cfg.target_address, target_port, projectHandle.cfg.family, projectHandle.cfg.enable_stats) catch |err| {
+                    std.debug.print("[UDP] Failed to create forwarder on port {d}: {any}\n", .{ listen_port, err });
+                    continue;
+                };
+                try startAndRegisterTcp(projectHandle, tcp_fwd);
+                try startAndRegisterUdp(projectHandle, udp_fwd);
             },
         }
     }
 }
 
-fn startTcpForward(
-    allocator: std.mem.Allocator,
-    listen_port: u16,
-    target_address: []const u8,
-    target_port: u16,
-    family: types.AddressFamily,
-    enable_stats: bool,
-) void {
-    var error_code: i32 = 0;
-    var tcp_forwarder = TcpForwarder.init(allocator, listen_port, target_address, target_port, family, enable_stats, &error_code) catch |err| {
-        std.debug.print("[TCP] Failed to create forwarder on port {d}: {any}, error_code={d}\n", .{ listen_port, err, error_code });
-        return;
-    };
+fn startTcpForward(tcp_forwarder: *TcpForwarder) void {
+    defer tcp_forwarder.deinit();
     tcp_forwarder.start() catch |err| {
-        std.debug.print("[TCP] Failed to start forwarder on port {d}: {any}\n", .{ listen_port, err });
+        std.debug.print("[TCP] Failed to start forwarder: {any}\n", .{err});
         return;
     };
 }
 
-fn startUdpForward(
-    allocator: std.mem.Allocator,
-    listen_port: u16,
-    target_address: []const u8,
-    target_port: u16,
-    family: types.AddressFamily,
-    enable_stats: bool,
-) void {
-    var udp_forwarder = UdpForwarder.init(allocator, listen_port, target_address, target_port, family, enable_stats);
+fn startUdpForward(udp_forwarder: *UdpForwarder) void {
     defer udp_forwarder.deinit();
     udp_forwarder.start() catch |err| {
-        std.debug.print("[UDP] Failed to start forwarder on port {d}: {any}\n", .{ listen_port, err });
+        std.debug.print("[UDP] Failed to start forwarder: {any}\n", .{err});
         return;
     };
 }
