@@ -217,8 +217,6 @@ static void tcp_on_target_read(uv_stream_t *target, ssize_t nread, const uv_buf_
 static void tcp_on_client_write(uv_write_t *req, int status);
 static void tcp_on_target_write(uv_write_t *req, int status);
 static void tcp_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf);
-static void tcp_walk_close_cb(uv_handle_t *handle, void *arg);
-static void udp_walk_close_cb(uv_handle_t *handle, void *arg);
 static void udp_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf);
 static void tcp_conn_close_cb(uv_handle_t *handle);
 static int sockaddr_equal(const struct sockaddr *a, const struct sockaddr *b);
@@ -227,6 +225,7 @@ struct tcp_forwarder
 {
     uv_loop_t *loop;
     uv_tcp_t server;
+    uv_async_t stop_handle;
     char *target_address;
     uint16_t target_port;
     addr_family_t family;
@@ -445,6 +444,31 @@ static void tcp_on_connect(uv_connect_t *req, int status)
     }
 }
 
+// Stop callbacks for thread-safe loop termination
+static void tcp_stop_cb(uv_async_t *handle)
+{
+    struct tcp_forwarder *fwd = (struct tcp_forwarder *)handle->data;
+    if (!fwd)
+        return;
+    if (!uv_is_closing((uv_handle_t *)&fwd->server))
+        uv_close((uv_handle_t *)&fwd->server, NULL);
+    if (!uv_is_closing((uv_handle_t *)&fwd->stop_handle))
+        uv_close((uv_handle_t *)&fwd->stop_handle, NULL);
+    uv_stop(fwd->loop);
+}
+
+static void udp_stop_cb(uv_async_t *handle)
+{
+    udp_forwarder_t_impl *fwd = (udp_forwarder_t_impl *)handle->data;
+    if (!fwd)
+        return;
+    if (!uv_is_closing((uv_handle_t *)&fwd->server))
+        uv_close((uv_handle_t *)&fwd->server, NULL);
+    if (!uv_is_closing((uv_handle_t *)&fwd->stop_handle))
+        uv_close((uv_handle_t *)&fwd->stop_handle, NULL);
+    uv_stop(fwd->loop);
+}
+
 static void tcp_on_new_connection(uv_stream_t *server, int status)
 {
     if (status < 0)
@@ -514,6 +538,10 @@ tcp_forwarder_t *tcp_forwarder_create(
     uv_tcp_init(fwd->loop, &fwd->server);
     fwd->server.data = fwd;
 
+    // Initialize async stop handle for thread-safe stopping
+    uv_async_init(fwd->loop, &fwd->stop_handle, tcp_stop_cb);
+    fwd->stop_handle.data = fwd;
+
     fwd->target_address = strdup(target_address);
     fwd->target_port = target_port;
     fwd->family = family;
@@ -581,8 +609,10 @@ int tcp_forwarder_start(tcp_forwarder_t *forwarder)
     if (r != 0)
         return r;
     forwarder->running = 1;
+    fprintf(stderr, "[tcp_forwarder_start]  loop up\n");
     int res = uv_run(forwarder->loop, UV_RUN_DEFAULT);
     forwarder->running = 0;
+    fprintf(stderr, "[tcp_forwarder_start]  loop down\n");
     return res;
 }
 
@@ -592,7 +622,8 @@ void tcp_forwarder_stop(tcp_forwarder_t *forwarder)
         return;
     if (forwarder->running)
     {
-        uv_stop(forwarder->loop);
+        // Thread-safe: send async signal to stop the loop from its own thread
+        uv_async_send(&forwarder->stop_handle);
     }
 }
 void tcp_forwarder_destroy(tcp_forwarder_t *forwarder)
@@ -748,37 +779,6 @@ static void udp_session_timeout_cb(uv_timer_t *timer)
         uint64_t remaining = UDP_SESSION_TIMEOUT_MS - elapsed;
         uv_timer_start(&session->timeout_timer, udp_session_timeout_cb, remaining, 0);
     }
-}
-
-static void tcp_walk_close_cb(uv_handle_t *handle, void *arg)
-{
-    struct tcp_forwarder *fwd = (struct tcp_forwarder *)arg;
-    if (!handle)
-        return;
-    if (handle == (uv_handle_t *)&fwd->server)
-    {
-        if (!uv_is_closing(handle))
-            uv_close(handle, NULL);
-    }
-    else if (handle->type == UV_TCP)
-    {
-        if (!uv_is_closing(handle))
-            uv_close(handle, tcp_conn_close_cb);
-    }
-    else
-    {
-        if (!uv_is_closing(handle))
-            uv_close(handle, NULL);
-    }
-}
-
-static void udp_walk_close_cb(uv_handle_t *handle, void *arg)
-{
-    (void)arg;
-    if (!handle)
-        return;
-    if (!uv_is_closing(handle))
-        uv_close(handle, NULL);
 }
 
 // per-connection close callback: free ctx when both ends are closed
@@ -981,6 +981,11 @@ udp_forwarder_t *udp_forwarder_create(
 
     uv_udp_init(fwd->loop, &fwd->server);
     fwd->server.data = fwd;
+
+    // Initialize async stop handle for thread-safe stopping
+    uv_async_init(fwd->loop, &fwd->stop_handle, udp_stop_cb);
+    fwd->stop_handle.data = fwd;
+
     fwd->target_address = strdup(target_address);
     fwd->target_port = target_port;
     fwd->family = family;
@@ -1050,7 +1055,7 @@ int udp_forwarder_start(udp_forwarder_t *forwarder)
         return UV_EINVAL;
     int r = uv_udp_recv_start(&fwd->server, udp_alloc_cb, udp_on_recv);
     if (r != 0)
-    return r;
+        return r;
     fwd->running = 1;
     int res = uv_run(fwd->loop, UV_RUN_DEFAULT);
     uv_udp_recv_stop(&fwd->server);
@@ -1064,7 +1069,8 @@ void udp_forwarder_stop(udp_forwarder_t *forwarder)
         return;
     if (forwarder->running)
     {
-        uv_stop(forwarder->loop);
+        // Thread-safe: send async signal to stop the loop from its own thread
+        uv_async_send(&forwarder->stop_handle);
     }
 }
 void udp_forwarder_destroy(udp_forwarder_t *forwarder)

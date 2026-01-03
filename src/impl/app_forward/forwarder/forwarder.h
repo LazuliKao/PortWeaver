@@ -49,6 +49,7 @@ typedef struct udp_forwarder udp_forwarder_t_impl;
 struct udp_forwarder {
 	uv_loop_t *loop;
 	uv_udp_t server;
+	uv_async_t stop_handle;
 	char *target_address;
 	uint16_t target_port;
 	addr_family_t family;

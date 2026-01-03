@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("../config/types.zig");
 const tcp_uv = @import("app_forward/tcp_forwarder_uv.zig");
 const udp_uv = @import("app_forward/udp_forwarder_uv.zig");
+const app_forward = @import("app_forward.zig");
 pub const TcpForwarder = tcp_uv.TcpForwarder;
 pub const UdpForwarder = udp_uv.UdpForwarder;
 
@@ -46,6 +47,8 @@ pub const ProjectHandle = struct {
     active_ports: u32 = 0,
     id: usize,
     runtime_enabled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    runtime_enabled_lock: std.Thread.Mutex = .{},
+
     pub fn init(allocator: std.mem.Allocator, id: usize, cfg: types.Project) ProjectHandle {
         return ProjectHandle{
             .tcp_forwarders = std.array_list.Managed(*TcpForwarder).init(allocator),
@@ -110,6 +113,7 @@ pub const ProjectHandle = struct {
     pub inline fn deregisterTcpHandle(self: *ProjectHandle, fwd: *TcpForwarder) !void {
         self.lock.lock();
         defer self.lock.unlock();
+        defer self.updateRuntimeStatus();
         self.active_ports -= 1;
         const index = try self.findIndexOfTcpForwarder(fwd);
         _ = self.tcp_forwarders.swapRemove(index);
@@ -117,12 +121,14 @@ pub const ProjectHandle = struct {
     pub inline fn registerTcpHandle(self: *ProjectHandle, fwd: *TcpForwarder) !void {
         self.lock.lock();
         defer self.lock.unlock();
+        defer self.updateRuntimeStatus();
         self.active_ports += 1;
         try self.tcp_forwarders.append(fwd);
     }
     pub inline fn deregisterUdpHandle(self: *ProjectHandle, fwd: *UdpForwarder) !void {
         self.lock.lock();
         defer self.lock.unlock();
+        defer self.updateRuntimeStatus();
         self.active_ports -= 1;
         const index = try self.findIndexOfUdpForwarder(fwd);
         _ = self.udp_forwarders.swapRemove(index);
@@ -130,23 +136,10 @@ pub const ProjectHandle = struct {
     pub inline fn registerUdpHandle(self: *ProjectHandle, fwd: *UdpForwarder) !void {
         self.lock.lock();
         defer self.lock.unlock();
+        defer self.updateRuntimeStatus();
         self.active_ports += 1;
         try self.udp_forwarders.append(fwd);
     }
-    // pub inline fn notifyTcpRunStatus(self: *ProjectHandle, fwd: *TcpForwarder, status: bool) void {
-    //     if (status) {
-    //         self.active_ports += 1;
-    //     } else {
-    //         self.active_ports -= 1;
-    //     }
-    // }
-    // pub inline fn notifyUdpRunStatus(self: *ProjectHandle, fwd: *UdpForwarder, status: bool) void {
-    //     if (status) {
-    //         self.active_ports += 1;
-    //     } else {
-    //         self.active_ports -= 1;
-    //     }
-    // }
 
     pub fn getProjectStats(self: *ProjectHandle) TrafficStats {
         var stats = TrafficStats{ .bytes_in = 0, .bytes_out = 0 };
@@ -178,10 +171,18 @@ pub const ProjectHandle = struct {
 
     /// Set runtime enabled state (controls forwarding without restarting threads)
     pub fn setRuntimeEnabled(self: *ProjectHandle, enabled: bool) void {
-        const old = self.runtime_enabled.swap(enabled, .seq_cst);
+        self.runtime_enabled_lock.lock();
+        defer self.runtime_enabled_lock.unlock();
+        const old = self.isRuntimeEnabled();
+        // const old = self.runtime_enabled.swap(enabled, .seq_cst);
+        std.log.debug("Project {d} ({s}) runtime enabled set to {} (was {})", .{ self.id, self.cfg.remark, enabled, old });
         if (old != enabled) {
             if (enabled) {
                 std.log.info("Project {d} ({s}) runtime enabled", .{ self.id, self.cfg.remark });
+                // Start all forwarders
+                app_forward.startForwarding(self.allocator, self) catch {
+                    std.log.err("Failed to start forwarding for project {d} ({s})", .{ self.id, self.cfg.remark });
+                };
             } else {
                 std.log.info("Project {d} ({s}) runtime disabled - stopping forwarders", .{ self.id, self.cfg.remark });
                 // Stop all forwarders

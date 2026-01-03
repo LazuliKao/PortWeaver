@@ -181,6 +181,9 @@ fn applyConfig(allocator: std.mem.Allocator, handles: *std.array_list.Managed(pr
     std.log.debug("Starting forwarding threads...", .{});
     var has_app_forward = false;
     for (handles.items) |*handle| {
+        if (!handle.cfg.enabled) {
+            continue;
+        }
         if (handle.cfg.enable_app_forward) {
             std.log.debug("  Launching thread for project {d} ({s})...", .{ handle.id, handle.cfg.remark });
             const thread = std.Thread.spawn(.{}, startForwardingThread, .{
@@ -203,10 +206,10 @@ fn startForwardingThread(allocator: std.mem.Allocator, handle: *project_status.P
     std.log.debug("[FORWARDING_THREAD] Starting for project {d} ({s}), enable_app_forward={}, enable_stats={}", .{ handle.id, handle.cfg.remark, handle.cfg.enable_app_forward, handle.cfg.enable_stats });
     app_forward.startForwarding(allocator, handle) catch |err| {
         std.log.debug("Error: Failed to start forwarding for {s}: {any}", .{ handle.cfg.remark, err });
-        // if (builtin.mode == .Debug) {
-        //     if (@errorReturnTrace()) |trace| {
-        //         std.debug.dumpStackTrace(trace.*);
-        //     }
-        // }
+        if (builtin.mode == .Debug) {
+            if (@errorReturnTrace()) |trace| {
+                std.debug.dumpStackTrace(trace.*);
+            }
+        }
     };
 }
