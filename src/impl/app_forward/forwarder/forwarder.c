@@ -198,6 +198,40 @@ static void data_free(void *ptr, const char *file, int line)
 #define DATA_FREE(ctx, sz) free(sz)
 #endif // DEBUG
 
+struct tcp_forwarder
+{
+    uv_loop_t *loop;
+    uv_tcp_t server;
+    uv_async_t stop_handle;
+    char *target_address;
+    uint16_t target_port;
+    addr_family_t family;
+    int running;
+    struct sockaddr_storage cached_dest_addr; // added: cache destination addr
+    int enable_stats;
+    unsigned long long bytes_in;
+    unsigned long long bytes_out;
+    unsigned int active_sessions; /* active TCP client sessions */
+};
+// Full UDP forwarder definition (kept here so C code can access members)
+struct udp_forwarder
+{
+    uv_loop_t *loop;
+    uv_udp_t server;
+    uv_async_t stop_handle;
+    char *target_address;
+    uint16_t target_port;
+    addr_family_t family;
+    int running;
+    udp_client_session_t *sessions;
+    udp_client_session_t *session_hash[UDP_SESSION_HASH_SIZE];
+    struct sockaddr_storage cached_dest_addr;
+    int enable_stats;
+    unsigned long long bytes_in;
+    unsigned long long bytes_out;
+    unsigned int active_sessions; /* active UDP client sessions */
+};
+
 // --- TCP Forwarder Implementation ---
 typedef struct tcp_conn_ctx
 {
@@ -220,21 +254,6 @@ static void tcp_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *b
 static void udp_alloc_cb(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf);
 static void tcp_conn_close_cb(uv_handle_t *handle);
 static int sockaddr_equal(const struct sockaddr *a, const struct sockaddr *b);
-
-struct tcp_forwarder
-{
-    uv_loop_t *loop;
-    uv_tcp_t server;
-    uv_async_t stop_handle;
-    char *target_address;
-    uint16_t target_port;
-    addr_family_t family;
-    int running;
-    struct sockaddr_storage cached_dest_addr; // added: cache destination addr
-    int enable_stats;
-    unsigned long long bytes_in;
-    unsigned long long bytes_out;
-};
 
 /* Wrapper for write/send requests that carry a pointer back to the forwarder
  * so we can free memory with the right allocator in the completion callbacks.
@@ -459,7 +478,7 @@ static void tcp_stop_cb(uv_async_t *handle)
 
 static void udp_stop_cb(uv_async_t *handle)
 {
-    udp_forwarder_t_impl *fwd = (udp_forwarder_t_impl *)handle->data;
+    udp_forwarder_t *fwd = (udp_forwarder_t *)handle->data;
     if (!fwd)
         return;
     if (!uv_is_closing((uv_handle_t *)&fwd->server))
@@ -643,7 +662,7 @@ traffic_stats_t tcp_forwarder_get_stats(tcp_forwarder_t *forwarder)
 
 // --- UDP Forwarder Implementation ---
 
-// [Moved up] client session struct must be declared before udp_forwarder_t_impl uses it
+// [Moved up] client session struct must be declared before udp_forwarder_t uses it
 typedef struct udp_client_session
 {
     uv_udp_t sock; // ephemeral socket bound for this client to talk to target
@@ -702,7 +721,7 @@ static void udp_on_send(uv_udp_send_t *req, int status)
 }
 
 // Remove session from forwarder's session list and hash table
-static void udp_session_remove(udp_forwarder_t_impl *fwd, udp_client_session_t *session)
+static void udp_session_remove(udp_forwarder_t *fwd, udp_client_session_t *session)
 {
     // Remove from linked list
     udp_client_session_t **pp = &fwd->sessions;
@@ -744,7 +763,7 @@ static void udp_session_close_cb(uv_handle_t *handle)
     if (session->close_count >= 2)
     {
         // Remove from session list and free
-        udp_session_remove((udp_forwarder_t_impl *)session->fwd, session);
+        udp_session_remove((udp_forwarder_t *)session->fwd, session);
         DATA_FREE(session->fwd, session);
     }
 }
@@ -837,7 +856,7 @@ static void udp_session_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t 
 }
 
 // create a session (ephemeral socket) for a client address
-static udp_client_session_t *udp_session_create(udp_forwarder_t_impl *fwd, const struct sockaddr *client_addr, int addr_len)
+static udp_client_session_t *udp_session_create(udp_forwarder_t *fwd, const struct sockaddr *client_addr, int addr_len)
 {
     udp_client_session_t *s = (udp_client_session_t *)DATA_ALLOC((struct udp_forwarder *)fwd, sizeof(udp_client_session_t));
     if (!s)
@@ -885,7 +904,7 @@ static udp_client_session_t *udp_session_create(udp_forwarder_t_impl *fwd, const
 }
 
 // find session by client addr (O(1) hash lookup)
-static udp_client_session_t *udp_find_session(udp_forwarder_t_impl *fwd, const struct sockaddr *client_addr)
+static udp_client_session_t *udp_find_session(udp_forwarder_t *fwd, const struct sockaddr *client_addr)
 {
     uint32_t hash = sockaddr_hash(client_addr);
     udp_client_session_t *it = fwd->session_hash[hash];
@@ -901,7 +920,7 @@ static udp_client_session_t *udp_find_session(udp_forwarder_t_impl *fwd, const s
 static void udp_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
                         const struct sockaddr *addr, unsigned flags)
 {
-    udp_forwarder_t_impl *fwd = (udp_forwarder_t_impl *)handle->data;
+    udp_forwarder_t *fwd = (udp_forwarder_t *)handle->data;
     if (nread > 0 && addr)
     {
         // Stats: count bytes received from client (bytes_in)
@@ -951,6 +970,7 @@ static void udp_on_recv(uv_udp_t *handle, ssize_t nread, const uv_buf_t *buf,
         DATA_FREE((struct udp_forwarder *)fwd, buf->base);
 }
 
+// Expose an implementation alias used by the C file
 udp_forwarder_t *udp_forwarder_create(
     uint16_t listen_port,
     const char *target_address,
@@ -959,9 +979,9 @@ udp_forwarder_t *udp_forwarder_create(
     int enable_stats,
     int *out_error)
 {
-    udp_forwarder_t_impl *fwd = NULL;
+    udp_forwarder_t *fwd = NULL;
 
-    fwd = (udp_forwarder_t_impl *)malloc(sizeof(udp_forwarder_t_impl));
+    fwd = (udp_forwarder_t *)malloc(sizeof(udp_forwarder_t));
     if (!fwd)
     {
         if (out_error)
@@ -1050,7 +1070,7 @@ udp_forwarder_t *udp_forwarder_create(
 
 int udp_forwarder_start(udp_forwarder_t *forwarder)
 {
-    udp_forwarder_t_impl *fwd = (udp_forwarder_t_impl *)forwarder;
+    udp_forwarder_t *fwd = (udp_forwarder_t *)forwarder;
     if (!fwd)
         return UV_EINVAL;
     int r = uv_udp_recv_start(&fwd->server, udp_alloc_cb, udp_on_recv);
@@ -1082,7 +1102,7 @@ void udp_forwarder_destroy(udp_forwarder_t *forwarder)
 traffic_stats_t udp_forwarder_get_stats(udp_forwarder_t *forwarder)
 {
     traffic_stats_t stats = {0, 0};
-    udp_forwarder_t_impl *fwd = (udp_forwarder_t_impl *)forwarder;
+    udp_forwarder_t *fwd = (udp_forwarder_t *)forwarder;
     if (fwd && fwd->enable_stats)
     {
         stats.bytes_in = __atomic_load_n(&fwd->bytes_in, __ATOMIC_RELAXED);
